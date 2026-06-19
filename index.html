@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>The Voyages of Paul — An Open-World Exploration</title>
+<style>
+  :root { --gold:#ffd27f; --ink:#10283a; --parch:#f4ead0; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; overflow:hidden; background:#0a1722;
+    font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif; color:#eaf4ff; }
+  #game { position:fixed; inset:0; display:block; width:100%; height:100%; }
+
+  /* crosshair */
+  #cross { position:fixed; left:50%; top:50%; width:8px; height:8px; margin:-4px 0 0 -4px;
+    border:2px solid rgba(255,255,255,.7); border-radius:50%; pointer-events:none; mix-blend-mode:difference; }
+
+  /* prompt (bottom center) */
+  #prompt { position:fixed; left:50%; bottom:46px; transform:translateX(-50%);
+    background:rgba(10,30,45,.62); padding:9px 18px; border-radius:30px; font-size:16px;
+    border:1px solid rgba(255,210,127,.35); backdrop-filter:blur(4px); white-space:nowrap;
+    pointer-events:none; letter-spacing:.2px; }
+  #prompt b { color:var(--gold); }
+
+  /* flash messages */
+  #flash { position:fixed; left:50%; top:18%; transform:translateX(-50%);
+    font-size:22px; color:var(--parch); text-shadow:0 2px 10px #000; opacity:0;
+    transition:opacity .6s; pointer-events:none; text-align:center; }
+
+  /* objective bar (top left) */
+  #objective { position:fixed; left:16px; top:14px; background:rgba(10,30,45,.55);
+    padding:8px 14px; border-radius:10px; font-size:15px; border:1px solid rgba(255,255,255,.12);
+    backdrop-filter:blur(4px); }
+  #objective b { color:var(--gold); }
+
+  /* minimap (top right) */
+  #minimap { position:fixed; right:14px; top:14px; width:240px; height:128px;
+    border-radius:10px; border:1px solid rgba(255,210,127,.35); box-shadow:0 6px 24px rgba(0,0,0,.4); }
+
+  /* hint to open help */
+  #hint { position:fixed; right:16px; bottom:14px; font-size:13px; color:#bcd6e8; opacity:.8; pointer-events:none; }
+  #hint b { color:var(--gold); }
+
+  /* full-screen colour flash (lightning / impacts / effects) */
+  #flashFx { position:fixed; inset:0; background:#fff; opacity:0; pointer-events:none; z-index:15;
+    transition:opacity .12s ease-out; mix-blend-mode:screen; }
+
+  /* conversion sequence (Damascus road) — dark screen, white words */
+  #conversion { position:fixed; inset:0; z-index:34; display:none; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; cursor:pointer;
+    background:#000; transition:background .8s; }
+  #conversion.show { display:flex; }
+  #convText { font-size:30px; line-height:1.6; color:#fff; max-width:760px; min-height:3em;
+    text-shadow:0 0 24px rgba(255,255,255,.45); letter-spacing:.5px; padding:0 24px; }
+  #convText.voice { font-style:italic; color:#fff; font-size:34px;
+    text-shadow:0 0 30px rgba(200,225,255,.8); }
+  #convHint { margin-top:30px; font-size:14px; color:#8aa6c0; letter-spacing:1px; }
+  #convHint kbd { background:#0a1622; border:1px solid #2f4a62; border-radius:5px; padding:1px 7px; font-family:monospace; }
+
+  /* Ananias maze minigame */
+  #maze { position:fixed; inset:0; z-index:35; display:none; background:#1a130c; }
+  #maze.show { display:block; }
+  #mazeCanvas { position:absolute; inset:0; width:100%; height:100%; }
+  #mazeHud { position:absolute; left:0; right:0; top:18px; text-align:center; pointer-events:none; }
+  #mazeHud h2 { margin:0; font-size:26px; color:#ffd27f; text-shadow:0 2px 12px #000; letter-spacing:1px; }
+  #mazeHud p { margin:6px 0 0; font-size:15px; color:#e7d8b8; text-shadow:0 1px 8px #000; }
+  #mazeHud kbd { background:#0a1622; border:1px solid #5a4326; border-radius:5px; padding:1px 7px; font-family:monospace; color:#ffd27f; }
+
+  /* cinematic event overlay */
+  #cinematic { position:fixed; inset:0; z-index:30; display:none; flex-direction:column;
+    align-items:center; justify-content:flex-end; padding-bottom:13vh; text-align:center;
+    background:radial-gradient(ellipse at center, rgba(4,10,16,.15) 0%, rgba(2,6,10,.82) 100%);
+    cursor:pointer; }
+  #cinematic.show { display:flex; }
+  #cineBig { position:absolute; top:30%; left:50%; transform:translate(-50%,-50%);
+    font-size:46px; font-weight:bold; letter-spacing:2px; color:#ffe6a8;
+    text-shadow:0 2px 24px #000, 0 0 40px rgba(255,180,80,.5); opacity:0; pointer-events:none;
+    width:90vw; }
+  #cineTitle { font-size:34px; color:var(--gold); letter-spacing:1px; margin-bottom:14px;
+    text-shadow:0 3px 18px #000; }
+  #cineText { font-size:23px; line-height:1.5; color:#f2ead2; max-width:780px; min-height:2.4em;
+    text-shadow:0 2px 14px #000; }
+  #cineHint { margin-top:22px; font-size:14px; color:#9fc4dc; letter-spacing:1px; opacity:.85; }
+  #cineHint kbd { background:#0a2030; border:1px solid #2f5a72; border-radius:5px; padding:1px 7px; font-family:monospace; }
+
+  /* journal */
+  #journal { position:fixed; inset:0; z-index:26; display:none; align-items:center; justify-content:center;
+    background:rgba(4,12,20,.72); }
+  #journal.show { display:flex; }
+  #journal .book { width:min(760px,94vw); max-height:86vh; overflow:auto; display:flex; gap:0;
+    background:linear-gradient(180deg,#f7eed6,#ece0c2); color:#3a2c1a; border-radius:12px;
+    box-shadow:0 24px 80px rgba(0,0,0,.6); border:1px solid #d3c096; }
+  #journal .col { flex:1; padding:22px 24px; }
+  #journal .col.left { border-right:1px solid #d8c79a; }
+  #journal h1 { margin:0 0 4px; font-size:26px; color:#5a3a1a; }
+  #journal .sub { font-size:13px; letter-spacing:1px; text-transform:uppercase; color:#9a7a44; margin-bottom:14px; }
+  .jrow { display:flex; align-items:center; gap:8px; padding:4px 0; font-size:15px; }
+  .jrow .nm { flex:1; }
+  .jrow.done .nm { color:#5a3a1a; }
+  .jrow .dot { width:9px; height:9px; border-radius:50%; background:#cdbb95; }
+  .jrow.visited .dot { background:#3f8f5a; }
+  .badge { font-size:13px; width:18px; text-align:center; }
+  .badge.on { color:#c8941f; } .badge.off { color:#cdbb95; }
+  #jlog { font-size:15px; line-height:1.6; }
+  #jlog p { margin:0 0 10px; }
+  #jlog .pending { color:#a9986f; font-style:italic; }
+  #journalClose { margin-top:14px; background:#5a3a1a; color:#f4ead0; border:none; cursor:pointer;
+    padding:9px 20px; border-radius:22px; font-size:14px; font-family:inherit; }
+
+  /* history panel */
+  #panel { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    background:rgba(4,12,20,.55); opacity:0; pointer-events:none; transition:opacity .35s; z-index:20; }
+  #panel.show { opacity:1; pointer-events:auto; }
+  .card { width:min(620px,92vw); max-height:84vh; overflow:auto; background:
+      linear-gradient(180deg,#f7eed6,#efe2c4); color:#33271a; border-radius:14px;
+    padding:26px 30px 22px; box-shadow:0 24px 80px rgba(0,0,0,.6); border:1px solid #d8c79a;
+    transform:translateY(10px); }
+  #panel.show .card { transform:translateY(0); transition:transform .35s; }
+  .card h1 { margin:0 0 2px; font-size:30px; color:#5a3a1a; letter-spacing:.3px; }
+  #panelTag { font-style:italic; color:#7a5a30; margin:0 0 14px; font-size:16px; }
+  #panelBody { font-size:17px; line-height:1.62; }
+  #panelOrder { margin-top:16px; font-size:13px; letter-spacing:1px; text-transform:uppercase;
+    color:#9a7a44; border-top:1px solid #d8c79a; padding-top:12px; }
+  #panelClose { margin-top:18px; background:#5a3a1a; color:#f4ead0; border:none; cursor:pointer;
+    padding:11px 22px; border-radius:24px; font-size:15px; font-family:inherit; }
+  #panelClose:hover { background:#6e4a26; }
+
+  /* help overlay */
+  #help { position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(4,12,20,.7); z-index:25; }
+  #help.show { display:flex; }
+  #help .card { color:#eaf4ff; background:rgba(14,40,58,.96); border:1px solid rgba(255,210,127,.3); }
+  #help h1 { color:var(--gold); }
+  #help kbd { background:#0a2030; border:1px solid #2f5a72; border-radius:5px; padding:1px 7px; font-family:monospace; }
+
+  /* epistle word puzzle */
+  #epistle { position:fixed; inset:0; z-index:32; display:none; align-items:center; justify-content:center;
+    background:rgba(4,12,20,.62); }
+  #epistle.show { display:flex; }
+  .epcard { width:min(700px,94vw); background:linear-gradient(180deg,#f7eed6,#ece0c2); color:#3a2c1a;
+    border-radius:14px; padding:24px 26px 20px; box-shadow:0 24px 80px rgba(0,0,0,.6);
+    border:1px solid #d3c096; text-align:center; }
+  #epHead { font-size:23px; color:#5a3a1a; margin-bottom:2px; }
+  #epRef { font-style:italic; color:#7a5a30; margin-bottom:10px; }
+  #epInstruct { font-size:14px; color:#8a6a3a; margin-bottom:14px; }
+  .epline { min-height:46px; border-bottom:2px dashed #c9b487; padding:8px; margin-bottom:16px;
+    display:flex; flex-wrap:wrap; gap:8px; justify-content:center; align-items:center; }
+  .epline.wrong { animation:epshake .4s; }
+  @keyframes epshake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-7px)} 75%{transform:translateX(7px)} }
+  .eppool { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-bottom:16px; min-height:40px; }
+  .chip { background:#5a3a1a; color:#f4ead0; border:none; cursor:pointer; padding:8px 14px;
+    border-radius:8px; font-size:17px; font-family:inherit; }
+  .chip:hover { background:#6e4a26; } .chip.placed { background:#caa64a; color:#3a2c10; }
+  .eprow { display:flex; gap:10px; justify-content:center; }
+  .eprow button { background:transparent; border:1px solid #b79a5a; color:#5a3a1a; cursor:pointer;
+    padding:8px 18px; border-radius:20px; font-size:14px; font-family:inherit; }
+  .eprow button:hover { background:#e4d4ab; }
+
+  /* pause / quit menus */
+  #pause, #quitConfirm { position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(4,12,20,.72); }
+  #pause { z-index:36; } #quitConfirm { z-index:37; }
+  #pause.show, #quitConfirm.show { display:flex; }
+  .menu { width:min(400px,90vw); background:linear-gradient(180deg,#16344e,#0e2336);
+    border:1px solid rgba(255,210,127,.3); border-radius:14px; padding:26px 26px 22px;
+    text-align:center; box-shadow:0 24px 80px rgba(0,0,0,.6); }
+  .menu h1 { color:var(--gold); margin:0 0 16px; font-size:28px; letter-spacing:.5px; }
+  .menu p { color:#cfe2f0; font-size:15px; line-height:1.55; margin:0 0 18px; }
+  .menu button { display:block; width:100%; margin:8px 0; padding:12px 14px; border:none;
+    border-radius:26px; font-size:16px; font-family:inherit; cursor:pointer;
+    background:#2e6fb0; color:#fff; transition:transform .08s, background .15s; }
+  .menu button:hover { background:#3a82c8; transform:translateY(-1px); }
+  .menu button.ghost { background:transparent; border:1px solid #3a5a72; color:#dbe9f4; }
+  .menu button.ghost:hover { background:rgba(255,255,255,.06); }
+  .menu button.danger { background:#a23c2e; } .menu button.danger:hover { background:#bd4836; }
+  .menu .row { display:flex; gap:10px; } .menu .row button { flex:1; margin:8px 0 0; }
+
+  /* start screen */
+  #start { position:fixed; inset:0; z-index:40; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center;
+    background:radial-gradient(circle at 50% 35%, #1b4a70 0%, #0a1d2e 70%); }
+  #start h1 { font-size:54px; margin:0 0 6px; color:#fff; text-shadow:0 4px 24px #000;
+    letter-spacing:1px; }
+  #start .sub { font-size:20px; color:var(--gold); margin-bottom:6px; }
+  #start p { max-width:560px; color:#cfe2f0; line-height:1.6; font-size:16px; margin:14px 22px; }
+  #startBtn { margin-top:18px; background:linear-gradient(180deg,#ffd27f,#e8a93f); color:#3a2510;
+    border:none; cursor:pointer; padding:16px 40px; border-radius:34px; font-size:20px;
+    font-family:inherit; font-weight:bold; box-shadow:0 10px 30px rgba(0,0,0,.4); }
+  #startBtn:hover { transform:translateY(-2px); }
+  .keys { margin-top:22px; font-size:14px; color:#9fc4dc; }
+  .keys kbd { background:#0a2030; border:1px solid #2f5a72; border-radius:5px; padding:2px 8px; font-family:monospace; }
+</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="cross"></div>
+
+  <div id="objective"></div>
+  <canvas id="minimap" width="240" height="128"></canvas>
+  <div id="flash"></div>
+  <div id="prompt"></div>
+  <div id="hint">Press <b>Esc</b> menu · <b>H</b> controls · <b>J</b> journal · <b>M</b> map · <b>N</b> music</div>
+
+  <!-- effect layers -->
+  <div id="flashFx"></div>
+
+  <!-- conversion sequence (Damascus road) -->
+  <div id="conversion">
+    <div id="convText"></div>
+    <div id="convHint">click or press <kbd>Space</kbd> to continue</div>
+  </div>
+
+  <!-- Ananias maze minigame -->
+  <div id="maze">
+    <canvas id="mazeCanvas"></canvas>
+    <div id="mazeHud">
+      <h2>Damascus — the Street called Straight</h2>
+      <p>You are <b style="color:#7fc4ff">Ananias</b>. Guide him through the city to <b style="color:#ffd27f">Saul</b>. &nbsp; <kbd>W A S D</kbd> / arrows to move</p>
+    </div>
+  </div>
+
+  <!-- cinematic event -->
+  <div id="cinematic">
+    <div id="cineBig"></div>
+    <div id="cineTitle"></div>
+    <div id="cineText"></div>
+    <div id="cineHint">click or press <kbd>Space</kbd> to continue</div>
+  </div>
+
+  <!-- journal -->
+  <div id="journal">
+    <div class="book">
+      <div class="col left">
+        <h1>The Voyage Log</h1>
+        <div class="sub" id="jcount"></div>
+        <div id="jlist"></div>
+        <button id="journalClose">Close</button>
+      </div>
+      <div class="col">
+        <h1>Luke’s Account</h1>
+        <div class="sub">“We” — the journey so far</div>
+        <div id="jlog"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- history panel -->
+  <div id="panel">
+    <div class="card">
+      <h1 id="panelTitle"></h1>
+      <p id="panelTag"></p>
+      <div id="panelBody"></div>
+      <h2 id="panelWorldHd" style="font-size:16px;color:#7a5a30;margin:18px 0 6px;letter-spacing:.5px;">The city &amp; its world</h2>
+      <div id="panelWorld" style="font-size:15.5px;line-height:1.55;color:#4a3a26;"></div>
+      <div id="panelRelic" style="margin-top:16px;padding:10px 14px;background:#efe2c2;border:1px solid #d8c79a;border-radius:8px;font-size:15px;"></div>
+      <div id="panelOrder"></div>
+      <button id="panelClose">Continue exploring</button>
+    </div>
+  </div>
+
+  <!-- help -->
+  <div id="help">
+    <div class="card">
+      <h1>How to play</h1>
+      <p><b>At sea</b> — <kbd>W</kbd> sail forward, <kbd>S</kbd> reverse, <kbd>A</kbd>/<kbd>D</kbd> steer.
+         Steer toward a port and press <kbd>E</kbd> to land.</p>
+      <p><b>On foot</b> — <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk, <kbd>Shift</kbd> run,
+         mouse to look. Find the glowing <span style="color:#ffd27f">monument</span> and press
+         <kbd>E</kbd> to read the town's history. Return to the dock and press <kbd>E</kbd> to set sail again.</p>
+      <p>On each island: witness the town's dramatic <span style="color:#ffd27f">event</span>, read its history at the glowing <span style="color:#ffd27f">monument</span>, find the floating <span style="color:#ffd27f">📜 letter</span>, and look for special challenges:</p>
+      <p>• <b>✍ Write the epistle</b> — at some ports you reorder the words of a real verse from Paul's letters.<br>
+         • <b>☀ Spread the light</b> — in some towns, walk up to the dark <b>lamps</b> to share the good news and fill the town with light.</p>
+      <p><kbd>J</kbd> journal · <kbd>M</kbd> map · <kbd>N</kbd> music · <kbd>H</kbd> this help · <kbd>Space</kbd> advance a scene · <kbd>Esc</kbd> pause/menu</p>
+      <p><b>The quest is ordered.</b> Your <span style="color:#ffd27f">⚓ objective</span> (top-left) names the next port to reach — find it across the sea. You may roam anywhere, but the journey only advances when you reach ports in order. It begins on the road to <b>Damascus</b>…</p>
+      <p>Reach all 21 ports in turn, witness every event, and gather all 21 letters to complete the voyage.</p>
+      <button id="helpClose" onclick="document.getElementById('help').classList.remove('show')"
+        style="margin-top:14px;background:#2e6fb0;color:#fff;border:none;cursor:pointer;padding:10px 22px;border-radius:22px;font-size:15px;font-family:inherit;">Close</button>
+    </div>
+  </div>
+
+  <!-- epistle word puzzle -->
+  <div id="epistle">
+    <div class="epcard">
+      <div id="epHead">Write the Letter</div>
+      <div id="epRef"></div>
+      <div id="epInstruct">Tap the words in the right order to write out the verse.</div>
+      <div id="epAnswer" class="epline"></div>
+      <div id="epPool" class="eppool"></div>
+      <div class="eprow"><button id="epClear">Clear</button><button id="epHint">Hint</button></div>
+    </div>
+  </div>
+
+  <!-- pause / quit menu -->
+  <div id="pause">
+    <div class="menu">
+      <h1>Paused</h1>
+      <button id="resumeBtn">Resume <span style="opacity:.55">(Esc)</span></button>
+      <button id="musicBtn" class="ghost">🎵 Music: On</button>
+      <button id="saveBtn" class="ghost">💾 Save progress (download)</button>
+      <button id="loadBtn" class="ghost">📂 Load progress (file)</button>
+      <button id="quitBtn" class="danger">Quit to title</button>
+      <input type="file" id="loadFile" accept="application/json,.json" style="display:none">
+    </div>
+  </div>
+
+  <!-- quit confirmation -->
+  <div id="quitConfirm">
+    <div class="menu">
+      <h1>Quit?</h1>
+      <p>Do you really want to quit to the title screen?<br>Any progress you haven’t saved will be lost.</p>
+      <div class="row">
+        <button id="quitNo" class="ghost">Keep playing</button>
+        <button id="quitYes" class="danger">Quit</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- start -->
+  <div id="start">
+    <div class="sub">An open-world voyage through the book of Acts</div>
+    <h1>The Voyages of Paul</h1>
+    <p>Your story begins on the road to <b>Damascus</b>, where Saul the persecutor will become
+       Paul the apostle. From there, sail the eastern Mediterranean — Antioch, Cyprus, Ephesus,
+       Athens, Corinth, Malta, Rome — reaching each port in turn, witnessing all that happened,
+       and uncovering its history.</p>
+    <button id="startBtn">⛵ Set Sail</button>
+    <div><button id="titleLoadBtn" style="margin-top:12px;background:transparent;border:1px solid #3a5a72;color:#cfe2f0;cursor:pointer;padding:9px 22px;border-radius:24px;font-size:15px;font-family:inherit;">📂 Load a saved voyage</button></div>
+    <div class="keys">
+      <kbd>W A S D</kbd> move · <kbd>Mouse</kbd> look · <kbd>E</kbd> interact · <kbd>Shift</kbd> run · <kbd>J</kbd> journal · <kbd>M</kbd> map · <kbd>Esc</kbd> menu
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+    }
+  }
+  </script>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
