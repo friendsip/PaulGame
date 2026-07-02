@@ -5,7 +5,7 @@ from the book of Acts — Antioch, Cyprus, Ephesus, Athens, Corinth, Malta, Rome
 more. Land at each port, wander its streets on foot, and uncover its real history.
 
 It plays like a relaxed sailing & exploration adventure — not a Bible-story app — but
-every one of the 20 towns is a genuine stop on Paul's missionary journeys, with
+every one of the 21 towns is a genuine stop on Paul's missionary journeys, with
 accurate historical notes drawn from Acts and the ancient world.
 
 Built with **Three.js**, runs entirely in the browser, no build step or install.
@@ -25,9 +25,11 @@ python3 -m http.server 8137
 ## The quest
 
 The journey is **ordered**. Your **⚓ objective** (top-left HUD, and a pulsing
-marker on the map) names the next port to reach. You're free to roam the whole sea,
-but the journey only advances when you reach ports **in order** — starting on the
-road to **Damascus**.
+marker on the maps) names the next port to reach, and the prompt at the bottom of
+the screen always shows its distance and a direction arrow. You're free to roam the
+whole sea and even land elsewhere to look around, but each town's **story, letter
+and challenges wait** until you reach it in order — starting on the road to
+**Damascus** (before the conversion, no other port will receive you).
 
 When you first land at Damascus, the **conversion sequence** plays: the screen goes
 white then black (Saul is blinded), the risen Jesus's words appear in glowing white
@@ -51,9 +53,10 @@ Click **Set Sail**, then:
   3. **Find the letter** — a floating golden **scroll/relic** (the epistles) is
      hidden on the island; walk into it to collect it.
   Then return to the **shore** and press `E` to board and sail on.
-- `J` journal · `M` map · `H` help · `Space` advance a scene · `Esc` close a panel.
+- `J` journal · `M` sea chart (a full labelled map) · `H` help · `Space` advance a
+  scene · `Esc` pause — it works everywhere, even mid-scene or mid-maze.
 
-Goal: visit all 20 towns, witness every event, and gather all 20 letters.
+Goal: visit all 21 towns, witness every event, and gather all 21 letters.
 
 ## Drama & story
 
@@ -79,8 +82,25 @@ Goal: visit all 20 towns, witness every event, and gather all 20 letters.
 - **☀ Spread the Light** — in some towns (Antioch, Salamis, Iconium, Thessalonica)
   walk up to the dark lamps to share the good news; light them all to fill the town
   with light.
+- **⛈ The Euroclydon** — as Malta becomes your objective, the storm of Acts 27
+  rises: darkening sky, heaving seas, and gusts that wrench the helm until the ship
+  runs aground on Malta's shore.
 - The journal and HUD track all of it (`★` events, `📜` letters, `✍` epistles, `☀` lit
   towns), and everything is included in saves.
+
+## Look & feel (golden-hour graphics)
+
+A post-processing pipeline (Three.js `EffectComposer`) gives the world a warm,
+cinematic *golden-hour Mediterranean* look:
+- **Bloom** — the low sun, sun-glitter on the water, the glowing monument orbs, lit
+  lamps and collectible letters all give off a soft luminous glow.
+- **Golden-hour lighting** — a low amber key light with cool blue shadow fill, and a
+  warm peach horizon haze that distant islands melt into.
+- **Colour grade + vignette + film grain**, **shoreline foam** at every island, and
+  brighter sparkling sun-glitter on the sea.
+- **Graphics quality** — `L` (or the pause menu) cycles **Low / Med / High** (scales
+  resolution, shadow detail and bloom). Default **Med**; drop to **Low** on weaker
+  machines.
 
 ## Pause, save & load
 
@@ -95,12 +115,14 @@ Goal: visit all 20 towns, witness every event, and gather all 20 letters.
   sun specular highlight, fading into the horizon haze.
 - **Full-screen sky** — a per-pixel view-ray gradient with a sun disc and glow,
   tone-mapped (ACES) to match the rest of the scene.
-- **20 hand-placed islands**, each themed by region (Levant, Cyprus, Anatolia,
-  Greece, Italy) with beaches, rolling terrain, palms/cypress, rocks, Greco-Roman
-  landmarks (temples, theatres, fora, an acropolis, harbour lighthouses), houses,
-  a dock and an interactive history monument.
-- A steerable **ship**, first-person sailing & walking, a live **minimap**, a
-  journey log, and optional procedurally-generated ambient ocean sound.
+- **21 hand-placed islands**, each themed by region (Levant, Cyprus, Anatolia,
+  Greece, Italy) with beaches, varied rolling terrain, palms/cypress, grass, rocks,
+  a paved road from the dock to the town centre, Greco-Roman landmarks (temples,
+  theatres, fora, an acropolis, harbour lighthouses — all solid: you collide with
+  buildings, columns and trees), houses, a dock and an interactive history monument.
+- A steerable **ship** with a planked, detailed deck, first-person sailing &
+  walking, a live **minimap** plus a full **sea chart** (`M`), a journey log, and
+  optional procedurally-generated ambient ocean sound.
 
 ## Files
 
@@ -112,6 +134,6 @@ src/data.js     The 20 towns: positions, themes, taglines, and historical notes
 
 ## The route (book of Acts)
 
-Antioch → Salamis → Paphos → Perga → Pisidian Antioch → Iconium → Lystra → Derbe →
-Troas → Philippi → Thessalonica → Berea → Athens → Corinth → Ephesus → Miletus →
-Caesarea → Jerusalem → Malta → Rome.
+Damascus → Antioch → Salamis → Paphos → Perga → Pisidian Antioch → Iconium →
+Lystra → Derbe → Troas → Philippi → Thessalonica → Berea → Athens → Corinth →
+Ephesus → Miletus → Caesarea → Jerusalem → Malta → Rome.

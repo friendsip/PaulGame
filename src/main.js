@@ -4,6 +4,11 @@
 //  Acts, and explore them on foot.
 // ============================================================================
 import * as THREE from 'three';
+import { EffectComposer }  from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass }      from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass }      from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass }      from 'three/addons/postprocessing/OutputPass.js';
 import { TOWNS, THEMES, JOURNEY_ORDER, EPISTLES, LIGHT_TOWNS } from './data.js';
 
 // ----------------------------------------------------------------------------
@@ -17,9 +22,13 @@ const RUN_SPEED   = 17;
 const SHIP_ACCEL  = 26;
 const SHIP_MAXSPD = 95;
 const SHIP_TURN   = 1.25;     // radians/sec
-const FOG_COLOR   = 0xbfe0ef;
+const FOG_COLOR   = 0xf0d8b8;   // warm peach horizon haze (golden hour)
 
 const horizonColor = new THREE.Color(FOG_COLOR);
+
+// The Euroclydon — the storm that wrecks the ship on Malta (Acts 27).
+// stormMix eases 0→1 as the ship nears Malta while Malta is the objective.
+let stormMix = 0;
 
 // ----------------------------------------------------------------------------
 //  Renderer / Scene / Camera
@@ -30,34 +39,34 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = 1.0;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(FOG_COLOR, 600, 3200);
+scene.fog = new THREE.Fog(FOG_COLOR, 400, 3200);
 
 const camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.1, 8000);
 
 // ----------------------------------------------------------------------------
 //  Lighting
 // ----------------------------------------------------------------------------
-const sunDir = new THREE.Vector3(0.55, 0.6, 0.35).normalize();
-const sun = new THREE.DirectionalLight(0xfff3d6, 2.0);
+const sunDir = new THREE.Vector3(0.7, 0.18, 0.35).normalize();   // low raking golden-hour sun
+const sun = new THREE.DirectionalLight(0xffc98a, 1.6);           // amber key, softer
 sun.position.copy(sunDir).multiplyScalar(600);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 10;
 sun.shadow.camera.far = 1400;
-const sc = 420;
+const sc = 600;   // low sun ⇒ long shadows; widen frustum so they don't clip
 sun.shadow.camera.left = -sc; sun.shadow.camera.right = sc;
 sun.shadow.camera.top = sc;   sun.shadow.camera.bottom = -sc;
-sun.shadow.bias = -0.0004;
+sun.shadow.bias = -0.0006;
 scene.add(sun);
 scene.add(sun.target);
 
-scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x8a7a55, 0.85));
-scene.add(new THREE.AmbientLight(0xffffff, 0.18));
+scene.add(new THREE.HemisphereLight(0x9fc1ff, 0x8a7a55, 1.0));   // bluer sky fill ⇒ blue shadows
+scene.add(new THREE.AmbientLight(0x6f86b8, 0.12));               // cool, low — keeps the shadow split
 
 // ----------------------------------------------------------------------------
 //  Sky dome
@@ -68,10 +77,10 @@ const skyMat = new THREE.ShaderMaterial({
   depthWrite: false, depthTest: false,
   uniforms: {
     topColor:    { value: new THREE.Color(0x2b6fb0) },
-    midColor:    { value: new THREE.Color(0x8fc3e8) },
+    midColor:    { value: new THREE.Color(0xa9c8e6) },
     botColor:    { value: horizonColor.clone() },
     sunDir:      { value: sunDir.clone() },
-    sunColor:    { value: new THREE.Color(0xfff6e0) },
+    sunColor:    { value: new THREE.Color(0xffe0a8) },
     uProjInv:    { value: new THREE.Matrix4() },
     uCamRot:     { value: new THREE.Matrix3() },
   },
@@ -88,17 +97,16 @@ const skyMat = new THREE.ShaderMaterial({
   fragmentShader: `
     varying vec3 vRay;
     uniform vec3 topColor, midColor, botColor, sunColor, sunDir;
-    vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }
     void main(){
       vec3 dir = normalize(vRay);
       float h = clamp(dir.y, -0.1, 1.0);
       vec3 col = mix(botColor, midColor, smoothstep(0.0, 0.25, h));
       col = mix(col, topColor, smoothstep(0.18, 0.75, h));
       float s = max(dot(dir, normalize(sunDir)), 0.0);
-      col += sunColor * pow(s, 220.0) * 1.6;            // sun disc
-      col += sunColor * pow(s, 8.0) * 0.18;             // sun glow
-      col = pow(aces(col), vec3(0.4545));               // tone-map + sRGB (match scene)
-      gl_FragColor = vec4(col, 1.0);
+      col += sunColor * pow(s, 220.0) * 2.4;            // sun disc (HDR, will bloom)
+      col += sunColor * pow(s, 8.0)   * 0.28;           // sun glow (HDR)
+      col = max(col, 0.0);                               // NaN/negativity guard before HDR buffer
+      gl_FragColor = vec4(col, 1.0);                     // LINEAR HDR — OutputPass encodes once
     }`,
 });
 const sky = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), skyMat);
@@ -117,25 +125,30 @@ function updateSky() {
 //  Ocean — animated sum-of-sines water with fresnel + sun specular + fog
 // ----------------------------------------------------------------------------
 const OCEAN_SIZE = 9000;
-const waterGeo = new THREE.PlaneGeometry(OCEAN_SIZE, OCEAN_SIZE, 360, 360);
+// 224 segments is plenty: lighting comes from analytic normals, not the mesh
+const waterGeo = new THREE.PlaneGeometry(OCEAN_SIZE, OCEAN_SIZE, 224, 224);
 waterGeo.rotateX(-Math.PI / 2);
 
 const waterUniforms = {
   uTime:      { value: 0 },
   uSunDir:    { value: sunDir.clone() },
-  uSunColor:  { value: new THREE.Color(0xfff2d0) },
+  uSunColor:  { value: new THREE.Color(0xffdca0) },
   uDeep:      { value: new THREE.Color(0x06283e) },
   uShallow:   { value: new THREE.Color(0x1a6f93) },
   uFogColor:  { value: horizonColor.clone() },
   uFogNear:   { value: scene.fog.near },
   uFogFar:    { value: scene.fog.far },
   uCamPos:    { value: new THREE.Vector3() },
+  uNearIsland:{ value: new THREE.Vector3() },   // (x, z, radius) of nearest town
+  uFoamColor: { value: new THREE.Color(0xf2efe6) },
+  uStorm:     { value: 0 },                     // 0 calm .. 1 the Euroclydon
 };
 
 const waterMat = new THREE.ShaderMaterial({
   uniforms: waterUniforms,
   vertexShader: `
     uniform float uTime;
+    uniform float uStorm;
     varying vec3 vWorld;
     varying vec3 vNormal;
 
@@ -154,12 +167,13 @@ const waterMat = new THREE.ShaderMaterial({
     void main(){
       vec3 pos = position;
       vec2 p = pos.xz;
-      vec2 dx, dz, dt;
+      vec2 dt;
+      float amp = 1.0 + uStorm * 1.2;           // seas rise in the Euroclydon
       float h = 0.0; vec2 dsum = vec2(0.0);
-      h += wave(p, normalize(D0), 0.012, 1.7, 1.1, dt); dsum += dt;
-      h += wave(p, normalize(D1), 0.021, 0.9, 1.6, dt); dsum += dt;
-      h += wave(p, normalize(D2), 0.045, 0.45, 2.3, dt); dsum += dt;
-      h += wave(p, normalize(D3), 0.080, 0.22, 3.0, dt); dsum += dt;
+      h += wave(p, normalize(D0), 0.012, 1.7*amp, 1.1, dt); dsum += dt;
+      h += wave(p, normalize(D1), 0.021, 0.9*amp, 1.6, dt); dsum += dt;
+      h += wave(p, normalize(D2), 0.045, 0.45*amp, 2.3, dt); dsum += dt;
+      h += wave(p, normalize(D3), 0.080, 0.22*amp, 3.0, dt); dsum += dt;
       pos.y += h;
       vec4 wp = modelMatrix * vec4(pos, 1.0);
       vWorld = wp.xyz;
@@ -171,8 +185,8 @@ const waterMat = new THREE.ShaderMaterial({
     varying vec3 vWorld;
     varying vec3 vNormal;
     uniform vec3 uSunDir, uSunColor, uDeep, uShallow, uFogColor, uCamPos;
-    uniform float uFogNear, uFogFar;
-    vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }
+    uniform float uFogNear, uFogFar, uTime, uStorm;
+    uniform vec3 uNearIsland, uFoamColor;        // (x, z, radius), foam tint
 
     void main(){
       vec3 N = normalize(vNormal);
@@ -184,19 +198,33 @@ const waterMat = new THREE.ShaderMaterial({
       vec3 skyish = mix(uShallow * 1.25, uFogColor, 0.35);   // reflected sky keeps blue
       vec3 col = mix(water, skyish, fres);
 
-      // sun specular (Blinn-Phong)
+      // sun specular (Blinn-Phong) — unclamped so it exceeds 1.0 and blooms
       vec3 H = normalize(uSunDir + V);
       float spec = pow(max(dot(N, H), 0.0), 220.0);
-      col += uSunColor * spec * 1.4;
+      col += uSunColor * spec * 2.2;
+      // sharper secondary glint for sparkle along the sun streak
+      float glint = pow(max(dot(N, H), 0.0), 900.0);
+      col += uSunColor * glint * 3.0;
       // soft diffuse sparkle
-      col += uSunColor * max(dot(N, uSunDir), 0.0) * 0.05;
+      col += uSunColor * max(dot(N, uSunDir), 0.0) * 0.06;
+
+      // shoreline foam — a narrow animated lapping band, fading with distance
+      float shore = length(vWorld.xz - uNearIsland.xy) - uNearIsland.z;   // <0 inside, >0 outside
+      float lap = sin(vWorld.x * 0.45 + vWorld.z * 0.45 + uTime * 1.7) * 0.5
+                + sin(vWorld.x * 0.13 - vWorld.z * 0.17 + uTime * 0.8) * 0.5;
+      float foam = smoothstep(8.0 + lap * 2.0, 1.0, shore) * (1.0 - smoothstep(1.0, -5.0, shore));
+      foam *= 0.5 + 0.3 * lap;
+      float foamFade = 1.0 - smoothstep(250.0, 800.0, length(uCamPos.xz - vWorld.xz));
+      col = mix(col, uFoamColor, clamp(foam * foamFade, 0.0, 0.55));
+      // whitecaps in the storm
+      col = mix(col, uFoamColor, uStorm * 0.22 * smoothstep(0.4, 1.0, max(0.0, lap) * (1.0 - N.y) * 12.0));
 
       float dist = length(uCamPos - vWorld);
       float fog = smoothstep(uFogNear, uFogFar, dist);
       col = mix(col, uFogColor, fog);
 
-      col = pow(aces(col), vec3(0.4545));               // tone-map + sRGB (match scene)
-      gl_FragColor = vec4(col, 1.0);
+      col = max(col, 0.0);                               // guard
+      gl_FragColor = vec4(col, 1.0);                     // LINEAR HDR
     }`,
 });
 const ocean = new THREE.Mesh(waterGeo, waterMat);
@@ -217,7 +245,7 @@ function waterHeightAt(x, z, t) {
     const dx = dxr / len, dz = dzr / len;
     h += a * Math.sin((dx * x + dz * z) * f + t * s);
   }
-  return h;
+  return h * (1 + stormMix * 1.2);
 }
 
 // ----------------------------------------------------------------------------
@@ -229,8 +257,12 @@ function islandHeight(town, lx, lz) {
   const R = town.radius;
   if (d > R) return -8;                       // underwater shelf
   const t = d / R;                            // 0 centre .. 1 edge
-  // plateau in the middle, beach slope near the rim
-  const plateau = 14;
+  // per-island character: plateau height and roll amplitude (cached, deterministic)
+  if (town._plateau === undefined) {
+    town._plateau = 11 + pseudo(town.order * 3.7 + 1) * 7;    // 11..18
+    town._roll = 1.4 + pseudo(town.order * 1.9 + 5) * 2.4;    // 1.4..3.8
+  }
+  const plateau = town._plateau;
   let h;
   if (t < 0.62) {
     h = plateau;
@@ -239,7 +271,7 @@ function islandHeight(town, lx, lz) {
     h = plateau * (1 - smooth(k)) - 9 * smooth(k);
   }
   // gentle rolling noise for natural look (deterministic, cheap)
-  const n = Math.sin(lx * 0.06 + town.order) * Math.cos(lz * 0.05 - town.order) * 2.2
+  const n = Math.sin(lx * 0.06 + town.order) * Math.cos(lz * 0.05 - town.order) * town._roll
           + Math.sin((lx + lz) * 0.13) * 1.0;
   return h + n * (1 - t * 0.7);
 }
@@ -250,7 +282,8 @@ function buildIsland(town) {
   const grp = new THREE.Group();
   const [cx, cz] = town.pos;
   grp.position.set(cx, 0, cz);
-  town._group = grp;
+  town._group = grp;            // kept for the static-matrix freeze below
+  town._colliders = [];         // {x, z, r} in island-local coords — solid things on foot
 
   // terrain mesh
   const span = town.radius * 2.3;
@@ -285,7 +318,7 @@ function buildIsland(town) {
   decorateIsland(town, grp, theme);
 
   // landmark building near the centre
-  const lm = buildLandmark(town.landmark, theme);
+  const lm = buildLandmark(town.landmark, theme, town._colliders);
   lm.position.set(0, plateauY(town, 0, 0), 0);
   grp.add(lm);
 
@@ -296,20 +329,22 @@ function buildIsland(town) {
     const a = (i / nHouses) * Math.PI * 2 + town.order;
     const r = ringR * (0.6 + 0.5 * pseudo(i + town.order));
     const hx = Math.cos(a) * r, hz = Math.sin(a) * r;
-    const house = buildHouse(theme);
+    const house = buildHouse(i * 3.1 + town.order * 7.7);
     house.position.set(hx, plateauY(town, hx, hz), hz);
     house.rotation.y = -a + Math.PI / 2;
     grp.add(house);
+    town._colliders.push({ x: hx, z: hz, r: 4.6 });
   }
 
-  // dock + welcome monument on the seaward (toward map-centre) side
+  // dock + welcome monument on the seaward (toward map-centre) side, and a
+  // paved road from the shore up to the town centre on every island
   const dockDir = new THREE.Vector2(-cx, -cz).normalize();
   const dockAng = Math.atan2(dockDir.y, dockDir.x);
   buildDock(town, grp, dockAng);
   buildMonument(town, grp, dockAng);
   buildRelic(town, grp, dockAng);
   buildLamps(town, grp);
-  if (town.conversion) buildRoad(town, grp, dockAng);
+  buildRoad(town, grp, dockAng);
 
   scene.add(grp);
 }
@@ -329,23 +364,31 @@ const rockMat = new THREE.MeshStandardMaterial({ color: 0x8a8276, roughness: 1, 
 function decorateIsland(town, grp, theme) {
   const foliageMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(theme.grass).multiplyScalar(0.8), roughness: 1, flatShading: true });
   const palmMat = new THREE.MeshStandardMaterial({ color: 0x3f7d3a, roughness: 1, flatShading: true });
-  const nTrees = 16;
+  // the road runs from the dock toward the centre — keep trees off it
+  const dAng = Math.atan2(-town.pos[1], -town.pos[0]);
+  const dX = Math.cos(dAng), dZ = Math.sin(dAng);
+  const onRoad = (x, z) => {
+    const along = x * dX + z * dZ;
+    if (along < town.radius * 0.05 || along > town.radius * 0.95) return false;
+    return Math.abs(-dZ * x + dX * z) < 8;
+  };
+  const nTrees = 20;
   for (let i = 0; i < nTrees; i++) {
     const a = pseudo(i * 3 + town.order) * Math.PI * 2;
     const r = town.radius * (0.2 + 0.62 * pseudo(i * 7 + town.order));
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     const y = islandHeight(town, x, z);
-    if (y < 1.5) continue;                       // keep trees off the beach
+    if (y < 1.5 || onRoad(x, z)) continue;       // keep trees off the beach and the road
     const tree = new THREE.Group();
     if (pseudo(i + 5) > 0.55) {                   // palm
       const tr = new THREE.Mesh(palmTrunkGeo, trunkMat);
       tr.position.y = 4; tr.rotation.z = (pseudo(i) - 0.5) * 0.3; tr.castShadow = true;
       tree.add(tr);
-      for (let f = 0; f < 6; f++) {
+      for (let f = 0; f < 5; f++) {
         const fr = new THREE.Mesh(frondGeo, palmMat);
         fr.position.y = 8;
         fr.rotation.z = Math.PI / 2.4;
-        fr.rotation.y = (f / 6) * Math.PI * 2;
+        fr.rotation.y = (f / 5) * Math.PI * 2;
         fr.castShadow = true;
         tree.add(fr);
       }
@@ -358,9 +401,10 @@ function decorateIsland(town, grp, theme) {
     const s = 0.7 + pseudo(i * 2) * 0.7;
     tree.scale.setScalar(s);
     grp.add(tree);
+    town._colliders.push({ x, z, r: 0.8 * s });
   }
   // a few rocks near the shore
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 10; i++) {
     const a = pseudo(i * 11 + town.order) * Math.PI * 2;
     const r = town.radius * (0.72 + 0.2 * pseudo(i * 5));
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
@@ -372,7 +416,28 @@ function decorateIsland(town, grp, theme) {
     rock.castShadow = true; rock.receiveShadow = true;
     grp.add(rock);
   }
+  // grass tufts fill the plateau (one instanced mesh per island — cheap)
+  const nTufts = 56;
+  const tuftMesh = new THREE.InstancedMesh(tuftGeo, foliageMat, nTufts);
+  const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3();
+  let placed = 0;
+  for (let i = 0; i < nTufts * 2 && placed < nTufts; i++) {
+    const a = pseudo(i * 5.3 + town.order * 2) * Math.PI * 2;
+    const r = town.radius * (0.1 + 0.66 * pseudo(i * 2.7 + town.order));
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const y = islandHeight(town, x, z);
+    if (y < 1.5 || onRoad(x, z)) continue;
+    const sc = 0.6 + pseudo(i * 1.7) * 0.9;
+    _p.set(x, y + 0.4 * sc, z); _s.set(sc, sc, sc);
+    _q.setFromAxisAngle(upAxis, pseudo(i) * Math.PI);
+    _m.compose(_p, _q, _s);
+    tuftMesh.setMatrixAt(placed++, _m);
+  }
+  tuftMesh.count = placed;
+  grp.add(tuftMesh);
 }
+const tuftGeo = new THREE.ConeGeometry(0.7, 1.1, 5);
+const upAxis = new THREE.Vector3(0, 1, 0);
 
 // ---- buildings -------------------------------------------------------------
 const marble = new THREE.MeshStandardMaterial({ color: 0xece7da, roughness: 0.6, metalness: 0.0 });
@@ -393,13 +458,15 @@ function columnRing(rx, rz, n, h, material) {
   return g;
 }
 
-function buildLandmark(type, theme) {
+function buildLandmark(type, theme, solids) {
   const g = new THREE.Group();
+  // register a circle in `solids` (island-local) so the player can't walk through
+  const solid = (x, z, r) => solids && solids.push({ x, z, r });
   if (type === 'temple') {
     const base = new THREE.Mesh(new THREE.BoxGeometry(34, 3, 22), marble);
     base.position.y = 1.5; base.receiveShadow = true; base.castShadow = true; g.add(base);
+    solid(0, 0, 16);
     const cols = new THREE.Group();
-    const rows = [[-14], [14]];
     for (let xi = -1; xi <= 1; xi += 2) {
       for (let i = 0; i < 6; i++) {
         const c = new THREE.Mesh(colGeo, marble);
@@ -430,10 +497,12 @@ function buildLandmark(type, theme) {
     const stage = new THREE.Mesh(new THREE.BoxGeometry(20, 2, 7), marbleWarm);
     stage.position.set(0, 1, -2); g.add(stage);
     g.add(columnRing(9, 2, 5, 8, marble).translateZ(-4));
+    solid(0, 0, 13);
   } else if (type === 'acropolis') {
     const hill = new THREE.Mesh(new THREE.CylinderGeometry(20, 26, 10, 24), new THREE.MeshStandardMaterial({ color: theme.rock, roughness: 1 }));
     hill.position.y = 5; hill.receiveShadow = true; g.add(hill);
     const temple = buildLandmark('temple', theme); temple.scale.setScalar(0.7); temple.position.y = 10; g.add(temple);
+    solid(0, 0, 26);
   } else if (type === 'harbor') {
     const light = new THREE.Group();
     const tower = new THREE.Mesh(new THREE.CylinderGeometry(3, 5, 26, 16), marbleWarm);
@@ -444,21 +513,24 @@ function buildLandmark(type, theme) {
     const fl = new THREE.PointLight(0xffa040, 2.2, 220, 1.6); fl.position.y = 31.5; light.add(fl);
     g.add(light);
     g.add(columnRing(16, 16, 10, 7, marble));
+    solid(0, 0, 5.5);
+    for (let i = 0; i < 10; i++) { const a = (i / 10) * Math.PI * 2; solid(Math.cos(a) * 16, Math.sin(a) * 16, 1.1); }
   } else { // forum: open colonnaded square
     const plaza = new THREE.Mesh(new THREE.BoxGeometry(44, 1, 44), marbleWarm);
     plaza.position.y = 0.5; plaza.receiveShadow = true; g.add(plaza);
     g.add(columnRing(20, 20, 18, 9, marble));
     const rostra = new THREE.Mesh(new THREE.BoxGeometry(10, 4, 6), marble); rostra.position.set(0, 2.5, 0); rostra.castShadow = true; g.add(rostra);
     const statue = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 1, 6, 8), marble); statue.position.set(0, 8, 0); g.add(statue);
+    solid(0, 0, 6);
+    for (let i = 0; i < 18; i++) { const a = (i / 18) * Math.PI * 2; solid(Math.cos(a) * 20, Math.sin(a) * 20, 1.1); }
   }
   return g;
 }
 
 const houseMats = [0xe7d8b8, 0xddc9a0, 0xe9e0cf, 0xd6c19a].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9 }));
-function buildHouse(theme) {
+function buildHouse(seed) {
   const g = new THREE.Group();
-  const w = 5 + pseudo(Math.random()) * 3;
-  const base = new THREE.Mesh(new THREE.BoxGeometry(6, 5, 6), houseMats[Math.floor(Math.random() * houseMats.length)]);
+  const base = new THREE.Mesh(new THREE.BoxGeometry(6, 5, 6), houseMats[Math.floor(pseudo(seed * 2.3 + 1) * houseMats.length)]);
   base.position.y = 2.5; base.castShadow = true; base.receiveShadow = true; g.add(base);
   const roof = new THREE.Mesh(new THREE.ConeGeometry(5.2, 3, 4), roofMat);
   roof.rotation.y = Math.PI / 4; roof.position.y = 6.5; roof.castShadow = true; g.add(roof);
@@ -489,10 +561,6 @@ function buildDock(town, grp, ang) {
       }
     }
   }
-  // remember the dock-end position in WORLD space (where the ship parks)
-  const endR = startR + length;
-  town._dock = new THREE.Vector3(town.pos[0] + dirx * endR, 1.5, town.pos[1] + dirz * endR);
-  town._landSpot = new THREE.Vector3(town.pos[0] + dirx * (startR - 6), 0, town.pos[1] + dirz * (startR - 6));
   town._dockAng = ang;
   grp.add(dock);
 }
@@ -501,24 +569,26 @@ function buildMonument(town, grp, ang) {
   const m = new THREE.Group();
   const dirx = Math.cos(ang), dirz = Math.sin(ang);
   const r = town.radius * 0.78;
-  const lx = dirx * r, lz = dirz * r;
+  // set just beside the road (perpendicular offset) so the path stays clear
+  const lx = dirx * r - dirz * 8, lz = dirz * r + dirx * 8;
   const y = plateauY(town, lx, lz);
   const stele = new THREE.Mesh(new THREE.BoxGeometry(3, 8, 1.2), marble);
   stele.position.y = 4; stele.castShadow = true;
   m.add(stele);
-  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.9, 16, 16), new THREE.MeshStandardMaterial({ color: 0xffd27f, emissive: 0xffb347, emissiveIntensity: 1.4 }));
+  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.9, 16, 16), new THREE.MeshStandardMaterial({ color: 0xffd27f, emissive: 0xffb347, emissiveIntensity: 2.0 }));
   orb.position.y = 9; m.add(orb);
   const pl = new THREE.PointLight(0xffc060, 1.6, 60, 2); pl.position.y = 9; m.add(pl);
   m.position.set(lx, y, lz);
   m.rotation.y = -ang;
   grp.add(m);
   town._orb = orb;
+  town._colliders.push({ x: lx, z: lz, r: 2.4 });
   // world-space marker for proximity checks
   town._monument = new THREE.Vector3(town.pos[0] + lx, y, town.pos[1] + lz);
 }
 
 // A floating glowing scroll/letter to collect on each island.
-const relicScrollMat = new THREE.MeshStandardMaterial({ color: 0xf5ead0, emissive: 0xffcf6e, emissiveIntensity: 0.9, roughness: 0.6 });
+const relicScrollMat = new THREE.MeshStandardMaterial({ color: 0xf5ead0, emissive: 0xffcf6e, emissiveIntensity: 1.8, roughness: 0.6 });
 const relicRodMat = new THREE.MeshStandardMaterial({ color: 0x9a6b3a, roughness: 0.6 });
 function buildRelic(town, grp, ang) {
   const a = ang + 2.5;                          // away from the dock/monument
@@ -532,7 +602,8 @@ function buildRelic(town, grp, ang) {
     const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.68, 0.68, 0.32, 14), relicRodMat);
     rod.rotation.z = Math.PI / 2; rod.position.x = x; g.add(rod);
   }
-  const halo = new THREE.PointLight(0xffd27f, 2.0, 45, 2); g.add(halo);
+  // no point light here — the emissive scroll blooms on its own, and 21 extra
+  // lights would tax every draw call in the forward renderer
   const baseY = groundY + 3.6;
   g.position.set(lx, baseY, lz);
   grp.add(g);
@@ -572,37 +643,56 @@ function buildLamps(town, grp) {
 // player lands at the seaward end and walks inland along it toward the city.
 const roadSlabMat = new THREE.MeshStandardMaterial({ color: 0xbcab86, roughness: 1 });
 const roadEdgeMat = new THREE.MeshStandardMaterial({ color: 0x8a7a58, roughness: 1 });
+const unitBoxGeo = new THREE.BoxGeometry(1, 1, 1);
 function buildRoad(town, grp, ang) {
   const dirx = Math.cos(ang), dirz = Math.sin(ang);
   const r0 = town.radius * 0.86, r1 = town.radius * 0.10;   // shore end → city end
   const steps = 16, seg = (r0 - r1) / steps;
   const yaw = Math.atan2(dirx, dirz);                       // align slab length along the road
+  // slabs and kerbs as two instanced meshes — a road costs 2 draw calls, not 48
+  const q = new THREE.Quaternion().setFromAxisAngle(upAxis, yaw);
+  const m = new THREE.Matrix4(), p = new THREE.Vector3(), sc = new THREE.Vector3();
+  const slabs = new THREE.InstancedMesh(unitBoxGeo, roadSlabMat, steps);
+  const kerbs = new THREE.InstancedMesh(unitBoxGeo, roadEdgeMat, steps);
+  let ki = 0;
   for (let i = 0; i < steps; i++) {
     const r = r0 - seg * i;
     const lx = dirx * r, lz = dirz * r;
     const y = plateauY(town, lx, lz);
-    const slab = new THREE.Mesh(new THREE.BoxGeometry(8, 0.4, seg + 1.2), roadSlabMat);
-    slab.position.set(lx, y + 0.12, lz); slab.rotation.y = yaw; slab.receiveShadow = true;
-    grp.add(slab);
+    p.set(lx, y + 0.12, lz); sc.set(8, 0.4, seg + 1.2);
+    m.compose(p, q, sc); slabs.setMatrixAt(i, m);
     if (i % 2 === 0) {                                       // low kerb stones along the edges
       for (const s of [-5, 5]) {
         const kx = lx - dirz * s, kz = lz + dirx * s;
-        const kerb = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.9, seg + 1.2), roadEdgeMat);
-        kerb.position.set(kx, plateauY(town, kx, kz) + 0.3, kz);
-        kerb.rotation.y = yaw; grp.add(kerb);
+        p.set(kx, plateauY(town, kx, kz) + 0.3, kz); sc.set(1.2, 0.9, seg + 1.2);
+        m.compose(p, q, sc); kerbs.setMatrixAt(ki++, m);
       }
     }
   }
-  // city gate — two pillars at the inner end marking Damascus
-  for (const s of [-6, 6]) {
-    const gx = dirx * (r1 + 4) - dirz * s, gz = dirz * (r1 + 4) + dirx * s;
-    const pillar = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.3, 12, 12), marbleWarm);
-    pillar.position.set(gx, plateauY(town, gx, gz) + 6, gz); pillar.castShadow = true; grp.add(pillar);
+  kerbs.count = ki;
+  slabs.receiveShadow = true;
+  grp.add(slabs, kerbs);
+  // city gate — two pillars at the inner end (only where the story calls for
+  // a gate: the walls of Damascus)
+  if (town.conversion) {
+    for (const s of [-6, 6]) {
+      const gx = dirx * (r1 + 4) - dirz * s, gz = dirz * (r1 + 4) + dirx * s;
+      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.3, 12, 12), marbleWarm);
+      pillar.position.set(gx, plateauY(town, gx, gz) + 6, gz); pillar.castShadow = true; grp.add(pillar);
+      town._colliders.push({ x: gx, z: gz, r: 1.5 });
+    }
   }
 }
 
-// build all islands
+// build all islands, then freeze their (static) matrices — thousands of
+// objects never move, so skip recomposing their transforms every frame.
+// Only each island's relic keeps animating (it bobs and spins).
 TOWNS.forEach(buildIsland);
+scene.updateMatrixWorld(true);
+for (const t of TOWNS) {
+  t._group.traverse(o => { o.matrixAutoUpdate = false; });
+  if (t._relicObj) t._relicObj.matrixAutoUpdate = true;
+}
 
 // ----------------------------------------------------------------------------
 //  The Ship
@@ -620,8 +710,27 @@ const ship = new THREE.Group();
   hull.castShadow = true; ship.add(hull);
   const deck = new THREE.Mesh(new THREE.BoxGeometry(18, 0.6, 7.5), woodLight);
   deck.position.y = 3.6; deck.castShadow = true; ship.add(deck);
-  // bow rail
-  const rail = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.15, 6, 12), woodLight);
+  // deck planking — alternating strips so the deck reads as wood, not a slab
+  const plankA = new THREE.MeshStandardMaterial({ color: 0x96683c, roughness: 0.95 });
+  const plankB = new THREE.MeshStandardMaterial({ color: 0x7d5530, roughness: 0.95 });
+  for (let i = 0; i < 6; i++) {
+    const strip = new THREE.Mesh(new THREE.BoxGeometry(17.6, 0.08, 1.05), i % 2 ? plankA : plankB);
+    strip.position.set(0, 3.95, -3.1 + i * 1.24);
+    ship.add(strip);
+  }
+  // gunwales along both sides, and a raked stem post + bowsprit at the bow
+  for (const side of [-3.65, 3.65]) {
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(17, 0.55, 0.45), woodDark);
+    rail.position.set(0, 4.35, side); rail.castShadow = true; ship.add(rail);
+  }
+  const stem = new THREE.Mesh(new THREE.BoxGeometry(0.8, 2.6, 0.8), woodDark);
+  stem.position.set(10.6, 4.6, 0); stem.rotation.z = -0.35; ship.add(stem);
+  const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.3, 7, 8), woodLight);
+  bowsprit.rotation.z = -Math.PI / 2 + 0.22; bowsprit.position.set(13.5, 5.6, 0); ship.add(bowsprit);
+  // forestay rope from bowsprit tip up to the mast head
+  const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 26.6, 5),
+    new THREE.MeshStandardMaterial({ color: 0x3c2e1c, roughness: 1 }));
+  rope.position.set(7.5, 15.2, 0); rope.rotation.z = Math.atan2(17, 20.5); ship.add(rope);
   // mast + sail
   const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.45, 22, 10), woodLight);
   mast.position.set(-1, 14, 0); mast.castShadow = true; ship.add(mast);
@@ -657,6 +766,14 @@ const player = {
 
 // mouse look
 let locked = false;
+// re-lock only when no overlay wants the cursor; swallow the rejection the
+// browser throws if the gesture/turnaround rules aren't met (it's harmless)
+function lockPointer() {
+  if (!started || conversionActive || cineOpen || epistleOpen || pauseOpen ||
+      panelOpen || journalOpen || helpOpen || mapOpen) return;
+  const p = canvas.requestPointerLock();
+  if (p && typeof p.catch === 'function') p.catch(() => {});
+}
 function onMouseMove(e) {
   if (!locked) return;
   player.yaw -= e.movementX * 0.0022;
@@ -670,8 +787,14 @@ document.addEventListener('pointerlockchange', () => { locked = document.pointer
 const keys = {};
 addEventListener('keydown', e => {
   keys[e.code] = true;
+  // Esc pauses everywhere — even mid-scene, mid-conversion, mid-maze, mid-puzzle
+  if (e.code === 'Escape' && (conversionActive || cineOpen || epistleOpen)) {
+    if (quitConfirmOpen) hideQuitConfirm(); else togglePause();
+    return;
+  }
   if (conversionActive) {                           // Damascus road sequence
     if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+    if (pauseOpen) return;
     if (!mazeActive && (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyE')) {
       const st = convSteps[convIdx];
       if (st && (st.k === 'v' || st.k === 'n' || st.k === 'heal')) convNext();
@@ -679,6 +802,7 @@ addEventListener('keydown', e => {
     return;                                         // (maze movement reads keys[] directly)
   }
   if (cineOpen) {                                   // a scene is playing
+    if (pauseOpen) return;
     if (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyE') { e.preventDefault(); advanceCine(); }
     return;
   }
@@ -688,18 +812,23 @@ addEventListener('keydown', e => {
     return;
   }
   if (e.code === 'KeyE') tryInteract();
-  if (e.code === 'KeyM') toggleMap();
+  if (e.code === 'KeyB') trySetSail();
+  if (e.code === 'KeyM') toggleBigMap();
   if (e.code === 'KeyJ') toggleJournal();
   if (e.code === 'KeyH') toggleHelp();
   if (e.code === 'KeyN') toggleMusic();
+  if (e.code === 'KeyL') cycleQuality();
   if (e.code === 'Escape') {                         // close the top overlay, else open the menu
-    if (panelOpen) closePanel();
+    if (mapOpen) toggleBigMap();
+    else if (panelOpen) closePanel();
     else if (journalOpen) toggleJournal();
     else if (helpOpen) toggleHelp();
     else if (started) togglePause();
   }
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
+// alt-tabbing away must not leave a key latched down (the ship would sail on forever)
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
 
 // ----------------------------------------------------------------------------
 //  Interaction
@@ -724,7 +853,14 @@ function tryInteract() {
   if (panelOpen) { closePanel(); return; }
   if (player.mode === MODE.SAIL) {
     const { town, edgeDist } = nearestTown();
-    if (edgeDist < LAND_RANGE) disembark(town);
+    if (edgeDist < LAND_RANGE) {
+      // before the Damascus road, Saul has one destination
+      if (!converted && !town.conversion) {
+        flash('You are Saul of Tarsus, bound for Damascus with letters of arrest — nothing else can matter yet.');
+        return;
+      }
+      disembark(town);
+    }
   } else {
     // read monument?
     const dm = player.pos.distanceTo(player.currentTown._monument);
@@ -744,10 +880,11 @@ function disembark(town) {
   const dir = new THREE.Vector2(ship.position.x - cx, ship.position.z - cz);
   if (dir.lengthSq() < 1e-4) dir.set(Math.cos(town._dockAng), Math.sin(town._dockAng));
   dir.normalize();
-  // the road to Damascus: land at the road's seaward end and walk inland to the city
+  // the road to Damascus: land ON the road's seaward end, the gate in view ahead
   const onRoad = town.conversion && !converted;
   if (onRoad) dir.set(Math.cos(town._dockAng), Math.sin(town._dockAng));
-  const lx = dir.x * town.radius * 0.72, lz = dir.y * town.radius * 0.72;   // land a bit inland
+  const landR = town.radius * (onRoad ? 0.85 : 0.72);
+  const lx = dir.x * landR, lz = dir.y * landR;
   player.pos.set(cx + lx, Math.max(0, islandHeight(town, lx, lz)), cz + lz);
   // the shore landing where the ship waits — walk back here to re-board
   const bx = dir.x * town.radius * 0.92, bz = dir.y * town.radius * 0.92;
@@ -755,19 +892,29 @@ function disembark(town) {
   // face inland (toward the town centre / monument)
   player.yaw = Math.atan2(dir.x, dir.y);
   player.pitch = 0;
+  // put the camera ashore NOW, so any scene that follows plays over the town,
+  // not over the sea the ship was just on
+  camera.position.set(player.pos.x, player.pos.y + EYE_HEIGHT, player.pos.z);
+  applyLook();
   if (onRoad) {                                   // defer the conversion — walk the road first
     awaitingConversion = { town };
     flash('The road to Damascus stretches ahead. Walk it toward the city…');
     return;
   }
+  const obj = objectiveTown();
+  if (!visited.has(town.id) && obj && obj.id !== town.id) {
+    // free roaming is allowed, but each town's story unfolds in journey order
+    flash(`You step ashore at ${town.name} — but its hour has not yet come. The Spirit presses you on to ${obj.name}.`);
+    updateHUD();
+    return;
+  }
   flash(`You step ashore at ${town.name}.`);
   if (!visited.has(town.id)) {
-    const wasObjective = objectiveTown() && objectiveTown().id === town.id;
     visited.add(town.id);
     updateHUD(); refreshJournal();
-    // celebrate any objective + open the history (the final step)
+    // celebrate the objective + open the history (the final step)
     const finish = () => {
-      if (wasObjective) flash(`✦ Objective reached: ${town.name}!`);
+      flash(`✦ Objective reached: ${town.name}!`);
       updateHUD(); refreshJournal();
       setTimeout(() => openPanel(town), 250);
     };
@@ -780,6 +927,17 @@ function disembark(town) {
   } else {
     updateHUD();
   }
+}
+
+// set sail from anywhere in a town (B) — no need to walk back to the shore landing
+function trySetSail() {
+  if (player.mode !== MODE.FOOT) return;
+  if (awaitingConversion) {                         // still walking the road to Damascus — must reach the city first
+    flash('Walk the road to Damascus first — there is no turning back.');
+    return;
+  }
+  if (panelOpen) closePanel();
+  embark();
 }
 
 function embark() {
@@ -826,10 +984,16 @@ function closePanel() {
   panelOpen = false;
   panelEl.classList.remove('show');
 }
-$('panelClose').addEventListener('click', () => { closePanel(); canvas.requestPointerLock(); });
+$('panelClose').addEventListener('click', () => { closePanel(); lockPointer(); });
 
 let helpOpen = false;
-function toggleHelp() { helpOpen = !helpOpen; $('help').classList.toggle('show', helpOpen); }
+function toggleHelp() {
+  helpOpen = !helpOpen;
+  $('help').classList.toggle('show', helpOpen);
+  if (helpOpen) document.exitPointerLock();
+  else lockPointer();
+}
+$('helpClose').addEventListener('click', () => { if (helpOpen) toggleHelp(); });
 
 // ----------------------------------------------------------------------------
 //  Progress tracking
@@ -944,6 +1108,7 @@ function toggleJournal() {
   journalOpen = !journalOpen;
   if (journalOpen) { refreshJournal(); document.exitPointerLock(); }
   $('journal').classList.toggle('show', journalOpen);
+  if (!journalOpen) lockPointer();
 }
 function refreshJournal() {
   const n = TOWNS.length;
@@ -1047,10 +1212,11 @@ $('epHint').addEventListener('click', () => {            // guarantees progress 
   renderEpistle(); checkEpistle();
 });
 
-// collect a relic when the player walks into it
+// collect a relic when the player walks into it (only once its town's story
+// has been reached in order — letters wait for their hour)
 function checkRelicPickup() {
   const town = player.currentTown;
-  if (!town || town._relicCollected) return;
+  if (!town || town._relicCollected || !visited.has(town.id)) return;
   const dx = player.pos.x - town._relicPos.x, dz = player.pos.z - town._relicPos.z;
   if (dx * dx + dz * dz < 7 * 7) {
     town._relicCollected = true;
@@ -1062,16 +1228,16 @@ function checkRelicPickup() {
   }
 }
 
-// Spread the Light — light any lamp you walk up to
+// Spread the Light — light any lamp you walk up to (after the town's story)
 function checkLampLighting() {
   const town = player.currentTown;
-  if (!town || !town._lamps || town._lit) return;
+  if (!town || !town._lamps || town._lit || !visited.has(town.id)) return;
   for (const L of town._lamps) {
     if (L.lit) continue;
     const dx = player.pos.x - L.pos.x, dz = player.pos.z - L.pos.z;
     if (dx * dx + dz * dz < 6 * 6) {
       L.lit = true; town._lampsLit++;
-      L.head.material.emissive.setHex(0xffce7a); L.head.material.emissiveIntensity = 2.4;
+      L.head.material.emissive.setHex(0xffce7a); L.head.material.emissiveIntensity = 2.5;
       sfxChime();
       if (town._lampsLit >= town._lamps.length) {
         town._lit = true; litTowns.add(town.id);
@@ -1117,7 +1283,7 @@ function startConversion(town, onDone) {
   conversionActive = true;
   convOnDone = onDone;
   document.exitPointerLock();
-  setMusicMood('sacred');
+  setMusicMood('silence');            // after the stab, the world falls silent until Paul's sight returns
   // a sequence of screens: f = flash, v = the Lord's voice (italic), n = narration, maze = minigame
   convSteps = [
     { k: 'flash' },
@@ -1147,6 +1313,7 @@ function convNext() {
   if (step.k === 'flash') {                          // the light from heaven
     convTextEl.textContent = '';
     convEl.style.transition = 'background .12s'; convEl.style.background = '#ffffff';
+    sfxStab();                                       // dramatic sting as the screen goes white
     setTimeout(() => {
       if (!conversionActive) return;
       convEl.style.transition = 'background 1.1s'; convEl.style.background = '#000';
@@ -1177,8 +1344,10 @@ function endConversion() {
   converted = true;
   conversionActive = false;
   convEl.classList.remove('show');
+  eventsSeen.add('damascus');        // the conversion IS Damascus's event (★ in the journal)
   flash('Your sight returns. Rise, Paul — your journey begins.');
   setMusicMood('town');
+  updateHUD(); refreshJournal();
   const cb = convOnDone; convOnDone = null;
   if (cb) cb();
 }
@@ -1225,14 +1394,23 @@ function genMaze(cw, ch) {
 function startMaze() {
   mazeActive = true;
   maze.won = false;
+  maze.t0 = performance.now();
   const m = genMaze(10, 7);
   maze.grid = m.grid; maze.W = m.W; maze.H = m.H;
   maze.ana = { x: 1.5, y: 1.5 };
   maze.saul = { x: m.W - 1.5, y: m.H - 1.5 };
   resizeMaze();
+  $('mazeSkip').style.display = 'none';
   mazeEl.classList.add('show');
   requestAnimationFrame(mazeLoop);
 }
+// a merciful exit if the maze proves too much — appears after a while
+$('mazeSkip').addEventListener('click', () => {
+  if (!mazeActive || maze.won) return;
+  maze.won = true;
+  sfxChime();
+  setTimeout(endMaze, 400);
+});
 
 function resizeMaze() {
   mazeCanvas.width = window.innerWidth;
@@ -1257,24 +1435,27 @@ let mazePrev = 0;
 function mazeLoop(ts) {
   if (!mazeActive) return;
   const dt = Math.min(0.05, (ts - mazePrev) / 1000 || 0.016); mazePrev = ts;
-  const sp = 5.2, r = 0.32;
-  let dx = 0, dy = 0;
-  if (keys['KeyW'] || keys['ArrowUp']) dy -= 1;
-  if (keys['KeyS'] || keys['ArrowDown']) dy += 1;
-  if (keys['KeyA'] || keys['ArrowLeft']) dx -= 1;
-  if (keys['KeyD'] || keys['ArrowRight']) dx += 1;
-  if (dx || dy) { const l = Math.hypot(dx, dy); dx /= l; dy /= l; }
-  const a = maze.ana;
-  const nx = a.x + dx * sp * dt;
-  if (!mazeBlocked(nx, a.y, r)) a.x = nx;
-  const ny = a.y + dy * sp * dt;
-  if (!mazeBlocked(a.x, ny, r)) a.y = ny;
-  // reached Saul?
-  if (!maze.won && Math.hypot(a.x - maze.saul.x, a.y - maze.saul.y) < 0.7) {
-    maze.won = true;
-    sfxChime();
-    setTimeout(endMaze, 700);
+  if (!pauseOpen) {                                // frozen while the pause menu is up
+    const sp = 5.2, r = 0.32;
+    let dx = 0, dy = 0;
+    if (keys['KeyW'] || keys['ArrowUp']) dy -= 1;
+    if (keys['KeyS'] || keys['ArrowDown']) dy += 1;
+    if (keys['KeyA'] || keys['ArrowLeft']) dx -= 1;
+    if (keys['KeyD'] || keys['ArrowRight']) dx += 1;
+    if (dx || dy) { const l = Math.hypot(dx, dy); dx /= l; dy /= l; }
+    const a = maze.ana;
+    const nx = a.x + dx * sp * dt;
+    if (!mazeBlocked(nx, a.y, r)) a.x = nx;
+    const ny = a.y + dy * sp * dt;
+    if (!mazeBlocked(a.x, ny, r)) a.y = ny;
+    // reached Saul?
+    if (!maze.won && Math.hypot(a.x - maze.saul.x, a.y - maze.saul.y) < 0.7) {
+      maze.won = true;
+      sfxChime();
+      setTimeout(endMaze, 700);
+    }
   }
+  if (!maze.won && ts - maze.t0 > 45000) $('mazeSkip').style.display = 'inline-block';
   drawMaze(ts);
   requestAnimationFrame(mazeLoop);
 }
@@ -1320,22 +1501,84 @@ function endMaze() {
   if (conversionActive) convNext();    // resume the conversion (healing)
 }
 
-// ---- minimap ----
+// ---- minimap (always on, top right) + the full sea chart (M) ----
 const mapCanvas = $('minimap');
 const mctx = mapCanvas.getContext('2d');
-let mapVisible = true;
-function toggleMap() { mapVisible = !mapVisible; mapCanvas.style.display = mapVisible ? 'block' : 'none'; }
+
+// world bounds shared by both maps
+const MAP_MINX = -1350, MAP_MAXX = 1620, MAP_MINZ = -760, MAP_MAXZ = 760;
+
+let mapOpen = false;
+const bigmapEl = $('bigmap'), bigCanvas = $('bigmapCanvas'), bmctx = bigCanvas.getContext('2d');
+function toggleBigMap() {
+  mapOpen = !mapOpen;
+  bigmapEl.classList.toggle('show', mapOpen);
+  if (mapOpen) { sizeBigMap(); document.exitPointerLock(); }
+  else lockPointer();
+}
+function sizeBigMap() {
+  const w = Math.min(window.innerWidth * 0.86, 980);
+  bigCanvas.width = Math.round(w);
+  bigCanvas.height = Math.round(w * (MAP_MAXZ - MAP_MINZ) / (MAP_MAXX - MAP_MINX));
+}
+function drawBigMap() {
+  const W = bigCanvas.width, H = bigCanvas.height, c = bmctx;
+  const sx = x => ((x - MAP_MINX) / (MAP_MAXX - MAP_MINX)) * W;
+  const sz = z => ((z - MAP_MINZ) / (MAP_MAXZ - MAP_MINZ)) * H;
+  c.clearRect(0, 0, W, H);
+  c.fillStyle = '#123a57'; c.fillRect(0, 0, W, H);
+  const obj = objectiveTown();
+  // dashed route line through the ports reached so far, on to the objective
+  const routeIds = JOURNEY_ORDER.filter(id => visited.has(id));
+  if (obj) routeIds.push(obj.id);
+  if (routeIds.length > 1) {
+    c.beginPath();
+    routeIds.forEach((id, i) => { const t = byId(id); i ? c.lineTo(sx(t.pos[0]), sz(t.pos[1])) : c.moveTo(sx(t.pos[0]), sz(t.pos[1])); });
+    c.setLineDash([6, 6]); c.strokeStyle = 'rgba(255,210,127,0.55)'; c.lineWidth = 1.5; c.stroke(); c.setLineDash([]);
+  }
+  for (const t of TOWNS) {
+    const x = sx(t.pos[0]), z = sz(t.pos[1]);
+    const r = Math.max(6, (t.radius / (MAP_MAXX - MAP_MINX)) * W * 0.35);
+    const isObj = obj && t.id === obj.id;
+    const known = visited.has(t.id) || isObj;
+    c.beginPath(); c.arc(x, z, r, 0, 7);
+    c.fillStyle = visited.has(t.id) ? '#c9b07a' : (isObj ? '#a8845a' : '#3d5f7d');
+    c.fill();
+    c.strokeStyle = 'rgba(240,225,190,0.5)'; c.lineWidth = 1; c.stroke();
+    if (isObj) {                                     // pulsing objective ring
+      const pr = r + 5 + 3 * Math.sin(clock.elapsedTime * 4);
+      c.beginPath(); c.arc(x, z, pr, 0, 7);
+      c.strokeStyle = '#ff8a4c'; c.lineWidth = 2.5; c.stroke();
+    }
+    c.font = '600 13px Georgia, serif'; c.textAlign = 'center';
+    c.fillStyle = known ? '#f4e6c4' : 'rgba(180,205,225,0.55)';
+    const label = known ? t.name : '?';
+    const lx = Math.min(W - 45, Math.max(45, x));       // keep labels on the chart
+    c.fillText(label, lx, Math.max(16, z - r - 6));
+    if (visited.has(t.id) && relics.has(t.id)) c.fillText('📜', x, z + 4);
+  }
+  // the ship / the traveller
+  const px = player.mode === MODE.SAIL ? ship.position.x : player.pos.x;
+  const pz = player.mode === MODE.SAIL ? ship.position.z : player.pos.z;
+  c.save();
+  c.translate(sx(px), sz(pz));
+  let fX, fZ;
+  if (player.mode === MODE.SAIL) { fX = Math.cos(shipState.heading); fZ = Math.sin(shipState.heading); }
+  else { fX = -Math.sin(player.yaw); fZ = -Math.cos(player.yaw); }
+  c.rotate(Math.atan2(fZ, fX) + Math.PI / 2);
+  c.beginPath(); c.moveTo(0, -10); c.lineTo(7, 9); c.lineTo(-7, 9); c.closePath();
+  c.fillStyle = '#ff5c5c'; c.fill();
+  c.strokeStyle = '#ffe0e0'; c.lineWidth = 1.5; c.stroke();
+  c.restore();
+}
 
 function drawMinimap() {
-  if (!mapVisible) return;
   const W = mapCanvas.width, H = mapCanvas.height;
   mctx.clearRect(0, 0, W, H);
   mctx.fillStyle = 'rgba(20,60,90,0.55)';
   mctx.fillRect(0, 0, W, H);
-  // world bounds
-  const minX = -1350, maxX = 1620, minZ = -760, maxZ = 760;
-  const sx = x => ((x - minX) / (maxX - minX)) * W;
-  const sz = z => ((z - minZ) / (maxZ - minZ)) * H;
+  const sx = x => ((x - MAP_MINX) / (MAP_MAXX - MAP_MINX)) * W;
+  const sz = z => ((z - MAP_MINZ) / (MAP_MAXZ - MAP_MINZ)) * H;
   // towns
   const obj = objectiveTown();
   for (const t of TOWNS) {
@@ -1372,10 +1615,10 @@ let started = false;
 $('startBtn').addEventListener('click', () => {
   started = true;
   $('start').style.display = 'none';
-  canvas.requestPointerLock();
+  lockPointer();
   startAudio();
 });
-canvas.addEventListener('click', () => { if (started && !panelOpen && !pauseOpen && !journalOpen && !epistleOpen) canvas.requestPointerLock(); });
+canvas.addEventListener('click', () => lockPointer());
 
 // ----------------------------------------------------------------------------
 //  Pause / quit menu + save & load (local file)
@@ -1387,7 +1630,7 @@ function togglePause() {
   pauseOpen = !pauseOpen;
   $('pause').classList.toggle('show', pauseOpen);
   if (pauseOpen) { document.exitPointerLock(); }
-  else { hideQuitConfirm(); if (started) canvas.requestPointerLock(); }
+  else { hideQuitConfirm(); lockPointer(); }
 }
 function showQuitConfirm() { quitConfirmOpen = true; $('quitConfirm').classList.add('show'); }
 function hideQuitConfirm() { quitConfirmOpen = false; $('quitConfirm').classList.remove('show'); }
@@ -1425,6 +1668,9 @@ function applyState(d) {
   converted = !!d.converted;
   awaitingConversion = null;                     // resume cleanly at sea
   visited.clear(); (d.visited || []).forEach(id => byId(id) && visited.add(id));
+  // a save taken mid-conversion has Damascus marked visited but not converted —
+  // unmark it so the road to Damascus (and the conversion) triggers again
+  if (!converted) visited.delete('damascus');
   eventsSeen.clear(); (d.eventsSeen || []).forEach(id => eventsSeen.add(id));
   relics.clear(); (d.relics || []).forEach(id => relics.add(id));
   epistlesWritten.clear(); (d.epistles || []).forEach(id => epistlesWritten.add(id));
@@ -1442,7 +1688,12 @@ function applyState(d) {
       }
     }
   }
-  if (d.ship) { ship.position.set(d.ship.x, 0, d.ship.z); shipState.heading = d.ship.heading ?? Math.PI; }
+  if (d.ship) {                                  // trust nothing from a hand-edited file
+    const num = (v, dflt) => (typeof v === 'number' && Number.isFinite(v)) ? v : dflt;
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    ship.position.set(clamp(num(d.ship.x, 1500), -4200, 4200), 0, clamp(num(d.ship.z, 180), -4200, 4200));
+    shipState.heading = num(d.ship.heading, Math.PI);
+  }
   shipState.speed = 0;
   player.mode = MODE.SAIL;                        // always resume at sea, at the saved ship
   player.currentTown = null;
@@ -1457,7 +1708,7 @@ function loadGameFile(file) {
       if (d.game !== 'voyages-of-paul') throw new Error('not a save');
       applyState(d);
       enterGameAfterLoad();                        // resume (from menu) or start (from title)
-      flash('Progress loaded.');
+      flash('Progress loaded — you resume at sea, aboard your ship.');
     } catch (e) { flash('Could not load that file — is it a Voyages of Paul save?'); }
   };
   reader.readAsText(file);
@@ -1469,7 +1720,7 @@ function enterGameAfterLoad() {
     started = true;
     $('start').style.display = 'none';
     startAudio();
-    canvas.requestPointerLock();
+    lockPointer();
   }
 }
 
@@ -1477,6 +1728,7 @@ $('titleLoadBtn').addEventListener('click', () => $('loadFile').click());
 function updateMusicBtn() { $('musicBtn').textContent = music.on ? '🎵 Music: On' : '🔇 Music: Off'; }
 $('musicBtn').addEventListener('click', () => { toggleMusic(); });
 $('resumeBtn').addEventListener('click', () => togglePause());
+$('pauseHelpBtn').addEventListener('click', () => { togglePause(); toggleHelp(); });
 $('saveBtn').addEventListener('click', () => saveGame());
 $('loadBtn').addEventListener('click', () => $('loadFile').click());
 $('loadFile').addEventListener('change', e => { if (e.target.files[0]) loadGameFile(e.target.files[0]); e.target.value = ''; });
@@ -1536,6 +1788,26 @@ function noiseBurst(dur, cutoff, vol) {
 }
 function sfxImpact() { noiseBurst(0.18, 1400, 0.4); }      // a thrown stone
 function sfxCrowd()  { noiseBurst(0.5, 700, 0.32); }       // a roaring crowd
+function sfxStab() {                                        // a dramatic orchestral sting — the light from heaven
+  if (!audioCtx || !music.on) return;
+  const now = audioCtx.currentTime;
+  // a tense minor-second-laden cluster over the Hijaz root: D, F, G#, D' — bites then swells
+  const stab = audioCtx.createGain();
+  stab.gain.setValueAtTime(0.0001, now);
+  stab.gain.linearRampToValueAtTime(0.5, now + 0.012);     // sharp attack
+  stab.gain.setValueAtTime(0.5, now + 0.18);
+  stab.gain.exponentialRampToValueAtTime(0.001, now + 1.6); // long dramatic tail
+  const flt = audioCtx.createBiquadFilter(); flt.type = 'lowpass';
+  flt.frequency.setValueAtTime(2600, now); flt.frequency.exponentialRampToValueAtTime(600, now + 1.5);
+  stab.connect(flt); flt.connect(audioCtx.destination);
+  [73.42, 146.83, 196.00, 233.08, 293.66].forEach(fr => { // D2, D3, G3, A#3, D4 — low power + dissonant bite
+    const o = audioCtx.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(fr, now);
+    o.frequency.linearRampToValueAtTime(fr * 1.012, now + 0.25); // a slight rising shudder
+    o.connect(stab); o.start(now); o.stop(now + 1.65);
+  });
+  sfxRumble();                                              // a deep impact beneath the chord
+}
 function sfxChime() {                                       // collecting a relic
   if (!audioCtx) return;
   const now = audioCtx.currentTime;
@@ -1564,7 +1836,7 @@ function scaleHz(deg, oct) {                      // deg into the Hijaz scale, o
 const music = {
   on: true, started: false, mood: 'sea',
   master: null, drone: null, droneGain: null, melGain: null, drumGain: null,
-  reverb: null, nextBeat: 0, beat: 0, timer: null, density: 0.35, drums: false,
+  reverb: null, nextBeat: 0, beat: 0, timer: null, density: 0.35, drums: false, spb: 0.5,
 };
 
 function buildReverb(ctx) {                       // tiny impulse-response for warmth
@@ -1634,18 +1906,25 @@ function frameDrum(time, accent) {
 
 function musicScheduler() {
   if (!audioCtx) return;
-  const ctx = audioCtx, spb = 0.5;               // seconds per beat (~120bpm half-time feel)
+  const ctx = audioCtx, spb = music.spb;         // seconds per beat (faster once the journey turns adventurous)
   while (music.nextBeat < ctx.currentTime + 0.25) {
     const t = music.nextBeat, b = music.beat;
-    if (music.drums) {                            // frame-drum pattern in towns
-      if (b % 4 === 0) frameDrum(t, true);
-      else if (b % 4 === 2) frameDrum(t, false);
-      else if (b % 8 === 5) frameDrum(t, false);
+    if (music.drums) {
+      if (converted) {                            // driving, syncopated journey rhythm
+        if (b % 4 === 0) frameDrum(t, true);
+        else if (b % 4 === 1) frameDrum(t, false);
+        else if (b % 4 === 3) frameDrum(t, false);
+        if (b % 8 === 6) frameDrum(t, true);
+      } else {                                    // gentler town frame-drum
+        if (b % 4 === 0) frameDrum(t, true);
+        else if (b % 4 === 2) frameDrum(t, false);
+        else if (b % 8 === 5) frameDrum(t, false);
+      }
     }
-    // sparse, improvisatory melody on the Hijaz scale
+    // improvisatory melody on the Hijaz scale (busier and brighter after conversion)
     if (Math.random() < music.density) {
       const deg = Math.floor(Math.random() * 7);
-      const oct = Math.random() < 0.3 ? 1 : 0;
+      const oct = Math.random() < (converted ? 0.45 : 0.3) ? 1 : 0;
       const ney = Math.random() < 0.35;
       pluck(t, scaleHz(deg, oct), ney ? 1.4 : 0.7, ney ? 0.18 : 0.22, ney ? 'sine' : 'triangle');
     }
@@ -1659,10 +1938,11 @@ function setMusicMood(mood) {
   music.mood = mood;
   const ctx = audioCtx, T = 1.5;
   const ramp = (param, v) => { param.cancelScheduledValues(ctx.currentTime); param.setTargetAtTime(v, ctx.currentTime, T / 3); };
-  if (mood === 'sea')        { music.density = 0.30; music.drums = false; ramp(music.drumGain.gain, 0.0);  ramp(music.melGain.gain, 0.5);  ramp(music.droneGain.gain, 0.12); }
-  else if (mood === 'town')  { music.density = 0.45; music.drums = true;  ramp(music.drumGain.gain, 0.32); ramp(music.melGain.gain, 0.55); ramp(music.droneGain.gain, 0.12); }
-  else if (mood === 'event') { music.density = 0.12; music.drums = true;  ramp(music.drumGain.gain, 0.5);  ramp(music.melGain.gain, 0.25); ramp(music.droneGain.gain, 0.18); }
-  else if (mood === 'sacred'){ music.density = 0.05; music.drums = false; ramp(music.drumGain.gain, 0.0);  ramp(music.melGain.gain, 0.5);  ramp(music.droneGain.gain, 0.22); }
+  const adv = converted;        // after the Damascus road the journey turns adventurous — faster, busier, more Middle-Eastern
+  if (mood === 'silence')    { music.density = 0.0;  music.drums = false; ramp(music.drumGain.gain, 0.0);  ramp(music.melGain.gain, 0.0);  ramp(music.droneGain.gain, 0.0); }
+  else if (mood === 'sea')   { music.spb = adv ? 0.40 : 0.5; music.density = adv ? 0.55 : 0.30; music.drums = adv;  ramp(music.drumGain.gain, adv ? 0.30 : 0.0); ramp(music.melGain.gain, adv ? 0.6 : 0.5);  ramp(music.droneGain.gain, 0.12); }
+  else if (mood === 'town')  { music.spb = adv ? 0.36 : 0.5; music.density = adv ? 0.72 : 0.45; music.drums = true; ramp(music.drumGain.gain, adv ? 0.44 : 0.32); ramp(music.melGain.gain, adv ? 0.62 : 0.55); ramp(music.droneGain.gain, adv ? 0.16 : 0.12); }
+  else if (mood === 'event') { music.spb = 0.5; music.density = 0.12; music.drums = true;  ramp(music.drumGain.gain, 0.5);  ramp(music.melGain.gain, 0.25); ramp(music.droneGain.gain, 0.18); }
 }
 
 function toggleMusic() {
@@ -1671,7 +1951,7 @@ function toggleMusic() {
     music.master.gain.cancelScheduledValues(audioCtx.currentTime);
     music.master.gain.setTargetAtTime(music.on ? 0.5 : 0.0001, audioCtx.currentTime, 0.4);
   }
-  if (typeof updateMusicBtn === 'function') updateMusicBtn();
+  updateMusicBtn();
   flash(music.on ? '🎵 Music on' : '🔇 Music off');
 }
 
@@ -1682,14 +1962,84 @@ const clock = new THREE.Clock();
 const fwd = new THREE.Vector3();
 const right = new THREE.Vector3();
 
+// nearest island (for the water shoreline foam) — ~21 towns/frame on the JS side, cheap
+function updateNearIsland() {
+  let best = null, bd = Infinity;
+  for (const tn of TOWNS) {
+    const d = Math.hypot(camera.position.x - tn.pos[0], camera.position.z - tn.pos[1]) - tn.radius;
+    if (d < bd) { bd = d; best = tn; }
+  }
+  if (best) waterUniforms.uNearIsland.value.set(best.pos[0], best.pos[1], best.radius);
+}
+
+// ----------------------------------------------------------------------------
+//  The Euroclydon — a storm wracks the sea off Malta (Acts 27). It rises as
+//  the ship nears Malta while Malta is the objective; the ship runs aground.
+// ----------------------------------------------------------------------------
+const STORM = {
+  skyTop: new THREE.Color(0x2e3d4d), skyMid: new THREE.Color(0x5c6a77),
+  fog: new THREE.Color(0x767c82), deep: new THREE.Color(0x0a1d2a), shallow: new THREE.Color(0x2a4a58),
+};
+const CALM = {
+  skyTop: new THREE.Color(0x2b6fb0), skyMid: new THREE.Color(0xa9c8e6),
+  fog: horizonColor.clone(), deep: new THREE.Color(0x06283e), shallow: new THREE.Color(0x1a6f93),
+};
+let stormWasActive = false, gustTimer = 0;
+
+function updateStorm(dt) {
+  const malta = byId('malta');
+  const obj = objectiveTown();
+  const distMalta = Math.hypot(ship.position.x - malta.pos[0], ship.position.z - malta.pos[1]) - malta.radius;
+  const active = player.mode === MODE.SAIL && converted && obj && obj.id === 'malta' && distMalta < 750;
+  if (active && !stormWasActive) { flash('⚠ The sky blackens — the Euroclydon is upon you!'); setMusicMood('event'); sfxRumble(); }
+  if (!active && stormWasActive && player.mode === MODE.SAIL) setMusicMood('sea');
+  stormWasActive = active;
+  stormMix += ((active ? 1 : 0) - stormMix) * Math.min(1, dt * 0.5);
+  if (stormMix < 0.01) { stormMix = Math.max(0, stormMix); if (!active) return applyStormLook(0); }
+  applyStormLook(stormMix);
+
+  if (active && stormMix > 0.25) {
+    gustTimer -= dt;
+    if (gustTimer <= 0) {                          // the wind wrenches the helm
+      gustTimer = 1.2 + Math.random() * 2.2;
+      shipState.heading += (Math.random() - 0.5) * 0.55 * stormMix;
+      shake = Math.max(shake, 0.5 * stormMix);
+      if (Math.random() < 0.45) { flashScreen('#dfe9f4', 0.28 * stormMix); sfxRumble(); }
+    }
+    // driven onto Malta: the ship runs aground — no need to press E
+    if (distMalta < LAND_RANGE) {
+      flash('The bow strikes a reef — the ship breaks up in the surf!');
+      disembark(malta);
+    }
+  }
+}
+
+function applyStormLook(m) {
+  skyMat.uniforms.topColor.value.copy(CALM.skyTop).lerp(STORM.skyTop, m);
+  skyMat.uniforms.midColor.value.copy(CALM.skyMid).lerp(STORM.skyMid, m);
+  skyMat.uniforms.botColor.value.copy(CALM.fog).lerp(STORM.fog, m);
+  scene.fog.color.copy(CALM.fog).lerp(STORM.fog, m);
+  scene.fog.near = 400 - 260 * m;
+  scene.fog.far = 3200 - 1900 * m;
+  waterUniforms.uFogColor.value.copy(scene.fog.color);
+  waterUniforms.uFogNear.value = scene.fog.near;
+  waterUniforms.uFogFar.value = scene.fog.far;
+  waterUniforms.uDeep.value.copy(CALM.deep).lerp(STORM.deep, m);
+  waterUniforms.uShallow.value.copy(CALM.shallow).lerp(STORM.shallow, m);
+  waterUniforms.uStorm.value = m;
+  sun.intensity = 1.6 * (1 - 0.5 * m);
+}
+
 function update(dt, t) {
   // --- water + sun uniforms ---
   waterUniforms.uTime.value = t;
   waterUniforms.uCamPos.value.copy(camera.position);
+  updateNearIsland();
+  updateStorm(dt);
 
   // pulse the town orbs and bob/spin the relic scrolls
   for (const town of TOWNS) {
-    if (town._orb) town._orb.material.emissiveIntensity = 1.1 + Math.sin(t * 3 + town.order) * 0.5;
+    if (town._orb) town._orb.material.emissiveIntensity = 1.8 + Math.sin(t * 3 + town.order) * 0.6;  // pulse, stays >1 to bloom
     if (town._relicObj && !town._relicCollected) {
       town._relicObj.rotation.y = t * 1.1 + town.order;
       town._relicObj.position.y = town._relicBaseY + Math.sin(t * 2 + town.order) * 0.35;
@@ -1764,9 +2114,10 @@ function updateSailing(dt, t) {
 
   // camera: near the bow, looking forward along the heading. Its height and look
   // target are kept LEVEL (independent of the wave bob) so the water line is stable.
+  // Raised enough that the deck reads as planking, not a wall of hull.
   const camBob = Math.sin(t * 0.7) * 0.25;
-  camera.position.set(ship.position.x + hx * 2.0, DECK_HEIGHT + 3.0 + camBob, ship.position.z + hz * 2.0);
-  camera.lookAt(ship.position.x + hx * 40, 2.0, ship.position.z + hz * 40);
+  camera.position.set(ship.position.x + hx * 1.2, DECK_HEIGHT + 3.8 + camBob, ship.position.z + hz * 1.2);
+  camera.lookAt(ship.position.x + hx * 40, 2.2, ship.position.z + hz * 40);
 }
 
 function updateFoot(dt, t) {
@@ -1792,6 +2143,18 @@ function updateFoot(dt, t) {
     player.pos.x = town.pos[0] + (lx / d) * maxR;
     player.pos.z = town.pos[1] + (lz / d) * maxR;
   }
+  // solid things (houses, columns, trees, the monument) push the player out
+  if (town._colliders) {
+    for (const c of town._colliders) {
+      const dx = (player.pos.x - town.pos[0]) - c.x, dz = (player.pos.z - town.pos[1]) - c.z;
+      const rr = c.r + 0.55, d2 = dx * dx + dz * dz;
+      if (d2 < rr * rr && d2 > 1e-6) {
+        const dd = Math.sqrt(d2);
+        player.pos.x = town.pos[0] + c.x + (dx / dd) * rr;
+        player.pos.z = town.pos[1] + c.z + (dz / dd) * rr;
+      }
+    }
+  }
   // follow terrain height
   const gy = islandHeight(town, player.pos.x - town.pos[0], player.pos.z - town.pos[1]);
   player.pos.y = Math.max(0, gy);
@@ -1813,17 +2176,42 @@ function applyLook() {
   camera.quaternion.copy(q);
 }
 
+// Where is the objective, relative to where I'm facing? → distance + an arrow
+const BEARING_ARROWS = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];
+function objectiveBearing() {
+  const o = objectiveTown();
+  if (!o) return null;
+  const sail = player.mode === MODE.SAIL;
+  const px = sail ? ship.position.x : player.pos.x;
+  const pz = sail ? ship.position.z : player.pos.z;
+  const tx = o.pos[0] - px, tz = o.pos[1] - pz;
+  const dist = Math.max(0, Math.round(Math.hypot(tx, tz) - o.radius));
+  let fX, fZ;
+  if (sail) { fX = Math.cos(shipState.heading); fZ = Math.sin(shipState.heading); }
+  else { fX = -Math.sin(player.yaw); fZ = -Math.cos(player.yaw); }
+  const ang = Math.atan2(fX * tz - fZ * tx, fX * tx + fZ * tz);
+  const arrow = BEARING_ARROWS[((Math.round(ang / (Math.PI / 4)) % 8) + 8) % 8];
+  return { town: o, dist, arrow };
+}
+
 function updatePrompt() {
   let msg = '';
+  const b = objectiveBearing();
+  const objBit = b ? `⚓ <b>${b.town.name}</b> ${b.dist}m <b>${b.arrow}</b>` : '';
   if (player.mode === MODE.SAIL) {
     const { town, edgeDist } = nearestTown();
-    const obj = objectiveTown();
-    if (edgeDist < LAND_RANGE) {
-      const isObj = obj && town.id === obj.id;
-      msg = `Press <b>E</b> to step ashore at <b>${town.name}</b>` + (isObj ? ' &nbsp;⚓<b>(your objective)</b>' : '');
-    } else if (obj) {
-      const ed = Math.max(0, Math.round(Math.hypot(ship.position.x - obj.pos[0], ship.position.z - obj.pos[1]) - obj.radius));
-      msg = `⚓ Make for <b>${obj.name}</b> — ${ed}m &nbsp;·&nbsp; follow the pulsing marker on the map`;
+    if (stormMix > 0.4) {
+      msg = `⚠ <b>The Euroclydon!</b> The storm drives you — run for <b>Malta</b>` + (b ? ` ${b.dist}m <b>${b.arrow}</b>` : '');
+    } else if (edgeDist < LAND_RANGE) {
+      if (!converted && !town.conversion) {
+        msg = `<b>${town.name}</b> — but your road leads to Damascus &nbsp;·&nbsp; ${objBit}`;
+      } else {
+        const isObj = b && town.id === b.town.id;
+        msg = `Press <b>E</b> to step ashore at <b>${town.name}</b>` +
+          (isObj ? ' &nbsp;⚓<b>(your objective)</b>' : (objBit ? ` &nbsp;·&nbsp; ${objBit}` : ''));
+      }
+    } else if (b) {
+      msg = `Make for ${objBit} &nbsp;·&nbsp; <b>M</b> for the sea chart`;
     } else {
       msg = `The voyage is complete — sail the seas freely.`;
     }
@@ -1834,34 +2222,143 @@ function updatePrompt() {
     const dm = player.pos.distanceTo(town._monument);
     const db = player.pos.distanceTo(player.boardPos);
     const letterLeft = !relics.has(town.id);
-    const lampsLeft = town._lamps && !town._lit;
-    if (dm < 15) msg = `Press <b>E</b> to read the history of <b>${town.name}</b>`;
-    else if (db < BOARD_RANGE) msg = `Press <b>E</b> to board your ship and sail on`;
-    else if (lampsLeft) msg = `<b>Spread the good news</b> — walk up to the dark <b>☀ lamps</b> to light them ` +
+    const storyWaits = !visited.has(town.id);
+    // the letter glimmers when you're close — a gentle hunt, not a chore
+    const relicNear = letterLeft && !storyWaits && !town._relicCollected &&
+      player.pos.distanceTo(town._relicPos) < 70;
+    const glimmer = relicNear ? ' — the <b>📜 letter</b> glimmers nearby!' : '';
+    if (storyWaits) msg = `The story of <b>${town.name}</b> awaits its hour &nbsp;·&nbsp; ${objBit} &nbsp;·&nbsp; <b>B</b> to set sail`;
+    else if (dm < 15) msg = `Press <b>E</b> to read the history of <b>${town.name}</b> &nbsp;·&nbsp; <b>B</b> to set sail`;
+    else if (db < BOARD_RANGE) msg = `Press <b>E</b> or <b>B</b> to board your ship and sail on`;
+    else if (town._lamps && !town._lit) msg = `<b>Spread the good news</b> — walk up to the dark <b>☀ lamps</b> to light them ` +
       `(${town._lampsLit}/${town._lamps.length})` +
-      (letterLeft ? ' · find the <b>📜 letter</b>' : '');
+      (letterLeft ? ' · find the <b>📜 letter</b>' : '') + glimmer + ' &nbsp;·&nbsp; <b>B</b> to set sail';
     else msg = `Explore <b>${town.name}</b> · read the <b>monument</b>` +
-      (letterLeft ? ' · find the glowing <b>📜 letter</b>' : ' · 📜 letter found') +
-      ' · return to shore to sail on';
+      (letterLeft ? ' · find the glowing <b>📜 letter</b>' : ' · 📜 letter found') + glimmer +
+      ' &nbsp;·&nbsp; press <b>B</b> to set sail';
   }
   promptEl.innerHTML = msg;
 }
+
+// ----------------------------------------------------------------------------
+//  Color-grade + vignette pass (runs in linear space, before OutputPass)
+// ----------------------------------------------------------------------------
+const GradeVignetteShader = {
+  uniforms: {
+    tDiffuse:    { value: null },
+    uTime:       { value: 0 },
+    uVignette:   { value: 0.42 },
+    uVigSoft:    { value: 0.55 },
+    uGrain:      { value: 0.035 },
+    uLift:       { value: 0.015 },
+    uWarmHi:     { value: new THREE.Vector3(1.05, 1.01, 0.95) },  // highlight tint (warm)
+    uCoolShadow: { value: new THREE.Vector3(0.96, 1.00, 1.06) },  // shadow tint (cool/teal)
+    uSaturation: { value: 1.06 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D tDiffuse;
+    uniform float uTime, uVignette, uVigSoft, uGrain, uLift, uSaturation;
+    uniform vec3  uWarmHi, uCoolShadow;
+    float hash(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+    void main(){
+      vec3 col = texture2D(tDiffuse, vUv).rgb;
+      float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      float shadowMask    = 1.0 - smoothstep(0.0, 0.55, luma);
+      float highlightMask = smoothstep(0.45, 1.0, luma);
+      col = col + uLift * (1.0 - col);                  // faded-film lift
+      col *= mix(vec3(1.0), uCoolShadow, shadowMask);   // cool shadows
+      col *= mix(vec3(1.0), uWarmHi,     highlightMask);// warm highlights
+      col = mix(vec3(luma), col, uSaturation);          // gentle saturation
+      vec2 d = vUv - 0.5;
+      float r = length(d) * 1.41421356;
+      float vig = 1.0 - uVignette * smoothstep(uVigSoft, 1.0, r);
+      col *= vig;
+      float gr = hash(vUv * vec2(1920.0, 1080.0) + fract(uTime) * 100.0) - 0.5;
+      col += gr * uGrain * mix(1.0, 0.35, luma);
+      gl_FragColor = vec4(clamp(col, 0.0, 4.0), 1.0);   // guard; keep HDR for OutputPass
+    }`,
+};
+
+// ----------------------------------------------------------------------------
+//  Post-processing composer  (RenderPass -> Bloom -> Grade/Vignette -> Output)
+// ----------------------------------------------------------------------------
+const composer = new EffectComposer(renderer);        // default RT is HalfFloatType (HDR)
+composer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+composer.setSize(window.innerWidth, window.innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.55, 0.75, 0.85);
+composer.addPass(bloomPass);
+const gradeVignettePass = new ShaderPass(GradeVignetteShader);
+composer.addPass(gradeVignettePass);
+composer.addPass(new OutputPass());                   // single tone-map + sRGB encode, LAST
+
+// ----------------------------------------------------------------------------
+//  Graphics quality (Low / Med / High) — scales pixel ratio, shadows, bloom
+// ----------------------------------------------------------------------------
+const QUALITY = {
+  low:  { pixelRatioCap: 1.0, shadowMapSize: 1024, shadowType: THREE.PCFShadowMap,     bloom: false, bloomResScale: 0.5, grain: 0.0   },
+  med:  { pixelRatioCap: 1.5, shadowMapSize: 2048, shadowType: THREE.PCFSoftShadowMap, bloom: true,  bloomResScale: 0.5, grain: 0.035 },
+  high: { pixelRatioCap: 2.0, shadowMapSize: 4096, shadowType: THREE.PCFSoftShadowMap, bloom: true,  bloomResScale: 1.0, grain: 0.045 },
+};
+const QUALITY_ORDER = ['low', 'med', 'high'];
+let qualityName = 'med';                              // default Med (safe first paint)
+let currentQuality = QUALITY[qualityName];
+function applyQuality(name) {
+  qualityName = name;
+  currentQuality = QUALITY[name];
+  const c = currentQuality;
+  const w = window.innerWidth, h = window.innerHeight;
+  const pr = Math.min(window.devicePixelRatio, c.pixelRatioCap);
+  renderer.setPixelRatio(pr);
+  renderer.setSize(w, h);
+  renderer.shadowMap.type = c.shadowType;
+  composer.setPixelRatio(pr);
+  composer.setSize(w, h);
+  if (sun.shadow.mapSize.width !== c.shadowMapSize) {  // resize shadow map (force rebuild)
+    sun.shadow.mapSize.set(c.shadowMapSize, c.shadowMapSize);
+    sun.shadow.map?.dispose();
+    sun.shadow.map = null;
+  }
+  bloomPass.enabled = c.bloom;
+  bloomPass.setSize(Math.max(1, Math.floor(w * c.bloomResScale)), Math.max(1, Math.floor(h * c.bloomResScale)));
+  gradeVignettePass.uniforms.uGrain.value = c.grain;
+  updateQualityBtn();
+}
+function updateQualityBtn() {
+  const label = qualityName[0].toUpperCase() + qualityName.slice(1);
+  $('qualityBtn').textContent = '🎚 Quality: ' + label;
+}
+function cycleQuality() {
+  const i = QUALITY_ORDER.indexOf(qualityName);
+  applyQuality(QUALITY_ORDER[(i + 1) % QUALITY_ORDER.length]);
+}
+$('qualityBtn').addEventListener('click', () => cycleQuality());
+applyQuality('med');
+updateQualityBtn();
 
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
   const t = clock.elapsedTime;
-  if (started && !panelOpen && !cineOpen && !journalOpen && !conversionActive && !mazeActive && !pauseOpen && !epistleOpen) {
+  if (started && !panelOpen && !cineOpen && !journalOpen && !conversionActive && !mazeActive && !pauseOpen && !epistleOpen && !mapOpen) {
     update(dt, t);
-  } else if (started) {         // paused (reading / scene / journal / conversion) — keep world alive
+  } else if (started) {         // paused (reading / scene / journal / map / conversion) — keep world alive
     waterUniforms.uTime.value = t;
     waterUniforms.uCamPos.value.copy(camera.position);
+    updateNearIsland();
     updateSky();
-    if (cineOpen) updateCine(dt, t);
+    if (cineOpen && !pauseOpen) updateCine(dt, t);
   }
+  gradeVignettePass.uniforms.uTime.value = t;
   applyShake();
   drawMinimap();
-  renderer.render(scene, camera);
+  if (mapOpen) drawBigMap();
+  composer.render();
 }
 animate();
 
@@ -1869,16 +2366,23 @@ animate();
 //  Resize
 // ----------------------------------------------------------------------------
 addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(w, h);
+  composer.setPixelRatio(Math.min(window.devicePixelRatio, currentQuality.pixelRatioCap));
+  composer.setSize(w, h);
+  bloomPass.setSize(Math.max(1, Math.floor(w * currentQuality.bloomResScale)), Math.max(1, Math.floor(h * currentQuality.bloomResScale)));
   if (mazeActive) resizeMaze();
 });
 
 // position camera initially so the first frame looks right (bow view, looking forward)
 {
   const hx0 = Math.cos(shipState.heading), hz0 = Math.sin(shipState.heading);
-  camera.position.set(ship.position.x + hx0 * 2.0, DECK_HEIGHT + 3.0, ship.position.z + hz0 * 2.0);
-  camera.lookAt(ship.position.x + hx0 * 40, 2.0, ship.position.z + hz0 * 40);
+  camera.position.set(ship.position.x + hx0 * 1.2, DECK_HEIGHT + 3.8, ship.position.z + hz0 * 1.2);
+  camera.lookAt(ship.position.x + hx0 * 40, 2.2, ship.position.z + hz0 * 40);
 }
 updateSky();
+
+// tells the boot watchdog in index.html that the engine came up
+window.__gameBooted = true;

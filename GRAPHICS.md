@@ -12,8 +12,13 @@
 - **Asset budget:** ✅ **A few small assets allowed** — stay mostly procedural, but a
   handful of small textures (noise / normal maps) **plus one small HDR environment**
   for nicer water & material reflections are in scope.
-- **Status:** Plan only for now — no code changes yet. Build when ready, starting at
-  **Phase 1 (post-processing + golden-hour lighting)** per §5.
+- **Status:** ✅ **Phase 1 IMPLEMENTED (2026-06-20).** Post-processing composer
+  (bloom + warm colour-grade + vignette + grain), golden-hour lighting, warm horizon
+  haze, brighter HDR sun/specular, shoreline foam + sun-glitter, emissive glow on
+  monument orbs / lit lamps / relics, and a **Low/Med/High quality setting** (pause
+  menu + `L` key, default Med). Verified by isolated pixel-readback + quality tests
+  (the full composited scene can't be screenshot in the headless software renderer —
+  see GRAPHICS_SPEC.md §9). Next: Phase 2 (terrain/vegetation/PBR) when ready.
 
 ## 0. The north star — art direction
 

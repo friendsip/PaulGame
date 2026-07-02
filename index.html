@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
 <title>The Voyages of Paul — An Open-World Exploration</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⛵</text></svg>">
 <style>
   :root { --gold:#ffd27f; --ink:#10283a; --parch:#f4ead0; }
   * { box-sizing:border-box; }
@@ -156,6 +157,30 @@
     padding:8px 18px; border-radius:20px; font-size:14px; font-family:inherit; }
   .eprow button:hover { background:#e4d4ab; }
 
+  /* the sea chart (M) */
+  #bigmap { position:fixed; inset:0; z-index:24; display:none; align-items:center; justify-content:center;
+    background:rgba(4,12,20,.72); }
+  #bigmap.show { display:flex; }
+  #bigmap .chart { background:linear-gradient(180deg,#16344e,#0e2336); border:1px solid rgba(255,210,127,.35);
+    border-radius:14px; padding:16px 18px 10px; box-shadow:0 24px 80px rgba(0,0,0,.6); text-align:center; }
+  #bigmap h1 { margin:0 0 10px; font-size:22px; color:var(--gold); letter-spacing:1px; }
+  #bigmapCanvas { border-radius:8px; display:block; }
+  #bigmap .mhint { margin-top:8px; font-size:13px; color:#9fc4dc; }
+  #bigmap .mhint kbd { background:#0a2030; border:1px solid #2f5a72; border-radius:5px; padding:1px 7px; font-family:monospace; }
+
+  /* merciful maze skip (appears after a while) */
+  #mazeSkip { position:absolute; right:24px; top:14px; pointer-events:auto; display:none;
+    background:rgba(10,22,34,.85); color:#ffd27f; border:1px solid #5a4326; border-radius:20px;
+    padding:8px 16px; font-family:inherit; font-size:14px; cursor:pointer; }
+  #mazeSkip:hover { background:rgba(30,45,60,.9); }
+
+  /* boot failure (no WebGL / CDN unreachable) */
+  #bootError { position:fixed; inset:0; z-index:60; display:none; align-items:center; justify-content:center;
+    text-align:center; background:#0a1722; padding:20px; }
+  #bootError.show { display:flex; }
+  #bootError .msg { max-width:540px; color:#eaf4ff; font-size:16px; line-height:1.6; }
+  #bootError h1 { color:var(--gold); font-size:24px; margin-bottom:8px; }
+
   /* pause / quit menus */
   #pause, #quitConfirm { position:fixed; inset:0; display:none; align-items:center; justify-content:center;
     background:rgba(4,12,20,.72); }
@@ -199,7 +224,7 @@
   <canvas id="minimap" width="240" height="128"></canvas>
   <div id="flash"></div>
   <div id="prompt"></div>
-  <div id="hint">Press <b>Esc</b> menu · <b>H</b> controls · <b>J</b> journal · <b>M</b> map · <b>N</b> music</div>
+  <div id="hint">Press <b>Esc</b> menu · <b>H</b> controls · <b>J</b> journal · <b>M</b> map · <b>N</b> music · <b>L</b> quality</div>
 
   <!-- effect layers -->
   <div id="flashFx"></div>
@@ -216,6 +241,16 @@
     <div id="mazeHud">
       <h2>Damascus — the Street called Straight</h2>
       <p>You are <b style="color:#7fc4ff">Ananias</b>. Guide him through the city to <b style="color:#ffd27f">Saul</b>. &nbsp; <kbd>W A S D</kbd> / arrows to move</p>
+      <button id="mazeSkip">✝ Let the Lord guide Ananias (skip)</button>
+    </div>
+  </div>
+
+  <!-- the sea chart (M) -->
+  <div id="bigmap">
+    <div class="chart">
+      <h1>The Great Sea — a chart of the voyages</h1>
+      <canvas id="bigmapCanvas" width="900" height="460"></canvas>
+      <div class="mhint">Ports appear as you reach them · ⚓ ring marks your objective · <kbd>M</kbd> or <kbd>Esc</kbd> to close</div>
     </div>
   </div>
 
@@ -266,14 +301,15 @@
          Steer toward a port and press <kbd>E</kbd> to land.</p>
       <p><b>On foot</b> — <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk, <kbd>Shift</kbd> run,
          mouse to look. Find the glowing <span style="color:#ffd27f">monument</span> and press
-         <kbd>E</kbd> to read the town's history. Return to the dock and press <kbd>E</kbd> to set sail again.</p>
+         <kbd>E</kbd> to read the town's history. Press <kbd>B</kbd> anytime to board your ship and sail on
+         (or return to the dock and press <kbd>E</kbd>).</p>
       <p>On each island: witness the town's dramatic <span style="color:#ffd27f">event</span>, read its history at the glowing <span style="color:#ffd27f">monument</span>, find the floating <span style="color:#ffd27f">📜 letter</span>, and look for special challenges:</p>
       <p>• <b>✍ Write the epistle</b> — at some ports you reorder the words of a real verse from Paul's letters.<br>
          • <b>☀ Spread the light</b> — in some towns, walk up to the dark <b>lamps</b> to share the good news and fill the town with light.</p>
-      <p><kbd>J</kbd> journal · <kbd>M</kbd> map · <kbd>N</kbd> music · <kbd>H</kbd> this help · <kbd>Space</kbd> advance a scene · <kbd>Esc</kbd> pause/menu</p>
-      <p><b>The quest is ordered.</b> Your <span style="color:#ffd27f">⚓ objective</span> (top-left) names the next port to reach — find it across the sea. You may roam anywhere, but the journey only advances when you reach ports in order. It begins on the road to <b>Damascus</b>…</p>
-      <p>Reach all 21 ports in turn, witness every event, and gather all 21 letters to complete the voyage.</p>
-      <button id="helpClose" onclick="document.getElementById('help').classList.remove('show')"
+      <p><kbd>J</kbd> journal · <kbd>M</kbd> sea chart · <kbd>N</kbd> music · <kbd>L</kbd> graphics quality (Low/Med/High) · <kbd>H</kbd> this help · <kbd>Space</kbd> advance a scene · <kbd>Esc</kbd> pause (works anywhere — even mid-scene)</p>
+      <p><b>The story unfolds in order.</b> Your <span style="color:#ffd27f">⚓ objective</span> (top-left, and on the sea chart) names the port where the story continues; the prompt at the bottom always shows its distance and direction. You may land elsewhere to look around, but each town's event, letter and challenges wait until you reach it in order. It all begins on the road to <b>Damascus</b>…</p>
+      <p>Reach all 21 ports in turn, witness every event, and gather all 21 letters to complete the voyage. And beware the sea off <b>Malta</b> — Acts 27 promises a storm.</p>
+      <button id="helpClose"
         style="margin-top:14px;background:#2e6fb0;color:#fff;border:none;cursor:pointer;padding:10px 22px;border-radius:22px;font-size:15px;font-family:inherit;">Close</button>
     </div>
   </div>
@@ -295,7 +331,9 @@
     <div class="menu">
       <h1>Paused</h1>
       <button id="resumeBtn">Resume <span style="opacity:.55">(Esc)</span></button>
+      <button id="pauseHelpBtn" class="ghost">❓ How to play</button>
       <button id="musicBtn" class="ghost">🎵 Music: On</button>
+      <button id="qualityBtn" class="ghost">🎚 Quality: Med</button>
       <button id="saveBtn" class="ghost">💾 Save progress (download)</button>
       <button id="loadBtn" class="ghost">📂 Load progress (file)</button>
       <button id="quitBtn" class="danger">Quit to title</button>
@@ -326,14 +364,43 @@
     <button id="startBtn">⛵ Set Sail</button>
     <div><button id="titleLoadBtn" style="margin-top:12px;background:transparent;border:1px solid #3a5a72;color:#cfe2f0;cursor:pointer;padding:9px 22px;border-radius:24px;font-size:15px;font-family:inherit;">📂 Load a saved voyage</button></div>
     <div class="keys">
-      <kbd>W A S D</kbd> move · <kbd>Mouse</kbd> look · <kbd>E</kbd> interact · <kbd>Shift</kbd> run · <kbd>J</kbd> journal · <kbd>M</kbd> map · <kbd>Esc</kbd> menu
+      <kbd>W A S D</kbd> move · <kbd>Mouse</kbd> look · <kbd>E</kbd> interact · <kbd>B</kbd> set sail · <kbd>Shift</kbd> run · <kbd>J</kbd> journal · <kbd>M</kbd> map · <kbd>Esc</kbd> menu
     </div>
   </div>
+
+  <!-- boot failure message (shown if the engine never comes up) -->
+  <div id="bootError">
+    <div class="msg">
+      <h1>The game could not start</h1>
+      <p id="bootErrorText"></p>
+    </div>
+  </div>
+  <script>
+    // watchdog: main.js sets window.__gameBooted when the engine is running.
+    // If it never does (CDN unreachable, no WebGL, a script error), say so
+    // instead of leaving a silent dark page.
+    (function () {
+      function fail(msg) {
+        if (window.__gameBooted) return;
+        document.getElementById('bootErrorText').textContent = msg;
+        document.getElementById('bootError').classList.add('show');
+      }
+      window.addEventListener('error', function (e) {
+        if (e.message) fail('A loading error occurred: ' + e.message +
+          '. The game needs internet access (the 3D engine loads from a CDN) and a WebGL-capable browser.');
+      });
+      setTimeout(function () {
+        fail('Still loading after 8 seconds. Check your internet connection — the 3D engine loads ' +
+          'from a CDN — and that your browser supports WebGL. Then reload the page.');
+      }, 8000);
+    })();
+  </script>
 
   <script type="importmap">
   {
     "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
     }
   }
   </script>

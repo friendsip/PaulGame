@@ -12,11 +12,11 @@
 // ============================================================================
 
 export const THEMES = {
-  levant:   { sand: 0xd9c08a, rock: 0xb0a07a, grass: 0x9caf6b, accent: 0xe8d8a0 },
-  cyprus:   { sand: 0xe6d2a0, rock: 0xc9b58a, grass: 0xa7bd76, accent: 0xf0e2b0 },
-  anatolia: { sand: 0xcdb98a, rock: 0x9c8f72, grass: 0x8fa45f, accent: 0xd8c79a },
-  greece:   { sand: 0xe8ddc0, rock: 0xcfc6b2, grass: 0x9fb878, accent: 0xf2ead2 },
-  italy:    { sand: 0xddc9a0, rock: 0xb6a888, grass: 0x95ab66, accent: 0xe6d6b0 },
+  levant:   { sand: 0xd9c08a, rock: 0xb0a07a, grass: 0x9caf6b },
+  cyprus:   { sand: 0xe6d2a0, rock: 0xc9b58a, grass: 0xa7bd76 },
+  anatolia: { sand: 0xcdb98a, rock: 0x9c8f72, grass: 0x8fa45f },
+  greece:   { sand: 0xe8ddc0, rock: 0xcfc6b2, grass: 0x9fb878 },
+  italy:    { sand: 0xddc9a0, rock: 0xb6a888, grass: 0x95ab66 },
 };
 
 // Event "fx" types drive the cinematic effects in the engine:
