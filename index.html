@@ -214,6 +214,24 @@
   #startBtn:hover { transform:translateY(-2px); }
   .keys { margin-top:22px; font-size:14px; color:#9fc4dc; }
   .keys kbd { background:#0a2030; border:1px solid #2f5a72; border-radius:5px; padding:2px 8px; font-family:monospace; }
+
+  /* challenges (mini-games) menu — reachable from the title screen */
+  #challenges { position:fixed; inset:0; z-index:41; display:none; align-items:center; justify-content:center;
+    background:rgba(4,12,20,.82); }
+  #challenges.show { display:flex; }
+  #challenges .menu { max-height:86vh; overflow:auto; }
+  #chStatus { display:none; margin:0 0 12px; padding:8px 12px; border:1px solid rgba(255,210,127,.35);
+    border-radius:10px; color:var(--gold); font-size:15px; }
+  .chsub { margin:16px 0 4px; font-size:13px; letter-spacing:1px; text-transform:uppercase; color:#9fc4dc; }
+
+  /* arcade challenge overlay (shared canvas for the five 2D mini-games) */
+  #arcade { position:fixed; inset:0; z-index:42; display:none; background:#04090f; }
+  #arcade.show { display:block; }
+  #arcadeCanvas { position:absolute; inset:0; width:100%; height:100%; }
+  #arcadeHud { position:absolute; left:0; right:0; top:14px; text-align:center; pointer-events:none; }
+  #arcadeHud h2 { margin:0; font-size:24px; color:#ffd27f; text-shadow:0 2px 12px #000; letter-spacing:1px; }
+  #arcadeHud p { margin:5px 0 0; font-size:14px; color:#e7d8b8; text-shadow:0 1px 8px #000; }
+  #arcadeHud b { color:#ffd27f; }
 </style>
 </head>
 <body>
@@ -363,8 +381,33 @@
        and uncovering its history.</p>
     <button id="startBtn">⛵ Set Sail</button>
     <div><button id="titleLoadBtn" style="margin-top:12px;background:transparent;border:1px solid #3a5a72;color:#cfe2f0;cursor:pointer;padding:9px 22px;border-radius:24px;font-size:15px;font-family:inherit;">📂 Load a saved voyage</button></div>
+    <div><button id="challengesBtn" style="margin-top:10px;background:transparent;border:1px solid #3a5a72;color:#cfe2f0;cursor:pointer;padding:9px 22px;border-radius:24px;font-size:15px;font-family:inherit;">🎮 Challenges — play the mini-games</button></div>
     <div class="keys">
       <kbd>W A S D</kbd> move · <kbd>Mouse</kbd> look · <kbd>E</kbd> interact · <kbd>B</kbd> set sail · <kbd>Shift</kbd> run · <kbd>J</kbd> journal · <kbd>M</kbd> map · <kbd>Esc</kbd> menu
+    </div>
+  </div>
+
+  <!-- arcade challenge overlay (the five 2D mini-games) -->
+  <div id="arcade">
+    <canvas id="arcadeCanvas"></canvas>
+    <div id="arcadeHud">
+      <h2 id="arcadeTitle"></h2>
+      <p id="arcadeSub"></p>
+    </div>
+  </div>
+
+  <!-- challenges (mini-games) menu -->
+  <div id="challenges">
+    <div class="menu">
+      <h1>🎮 Challenges</h1>
+      <p>Jump straight into the voyage's mini-games. Practice here doesn't change your journey.</p>
+      <div id="chStatus"></div>
+      <button id="chMaze">🌀 Ananias's Maze — the Street called Straight</button>
+      <div class="chsub">🎮 Arcade — new adventures</div>
+      <div id="chArcade"></div>
+      <div class="chsub">✍ Write the Epistle — reorder the verse</div>
+      <div id="chEpistles"></div>
+      <button id="challengesBack" class="ghost" style="margin-top:16px;">← Back to title</button>
     </div>
   </div>
 

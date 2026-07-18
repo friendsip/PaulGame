@@ -10,6 +10,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass }      from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass }      from 'three/addons/postprocessing/OutputPass.js';
 import { TOWNS, THEMES, JOURNEY_ORDER, EPISTLES, LIGHT_TOWNS } from './data.js';
+import { ARCADE_GAMES, startArcade, stopArcade, arcadeRunning } from './challenges.js';
 
 // ----------------------------------------------------------------------------
 //  Constants
@@ -787,6 +788,15 @@ document.addEventListener('pointerlockchange', () => { locked = document.pointer
 const keys = {};
 addEventListener('keydown', e => {
   keys[e.code] = true;
+  if (challengeMode) {                              // title-screen mini-game: Esc returns to the menu
+    if (e.code === 'Escape') quitChallenge();
+    if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+    return;                                         // (maze movement reads keys[] directly)
+  }
+  if (!started && challengesEl.classList.contains('show')) {
+    if (e.code === 'Escape') hideChallenges();
+    return;
+  }
   // Esc pauses everywhere — even mid-scene, mid-conversion, mid-maze, mid-puzzle
   if (e.code === 'Escape' && (conversionActive || cineOpen || epistleOpen)) {
     if (quitConfirmOpen) hideQuitConfirm(); else togglePause();
@@ -1152,11 +1162,11 @@ function shuffleNotIdentity(n) {                  // shuffled [0..n-1], never th
   } while (n > 1 && idx.every((v, i) => v === i));
   return idx;
 }
-function startEpistle(town, done) {
+function startEpistle(town, done, arcade = false) {
   const e = EPISTLES[town.id];
   epistleOpen = true;
   document.exitPointerLock();
-  epState.town = town; epState.done = done;
+  epState.town = town; epState.done = done; epState.arcade = arcade;
   epState.target = e.text.split(' ');
   epState.chips = epState.target.map((w, i) => ({ id: i, word: w }));   // chip id i == correct position i
   epState.pool = shuffleNotIdentity(epState.target.length);
@@ -1190,10 +1200,12 @@ function checkEpistle() {
 function winEpistle() {
   const town = epState.town, done = epState.done;
   epistleOpen = false; epEl.classList.remove('show');
-  epistlesWritten.add(town.id);
   sfxChime();
-  flash(`✍ You wrote the letter — ${EPISTLES[town.id].ref}`);
-  updateHUD(); refreshJournal();
+  if (!epState.arcade) {                 // challenge-menu practice doesn't award voyage progress
+    epistlesWritten.add(town.id);
+    flash(`✍ You wrote the letter — ${EPISTLES[town.id].ref}`);
+    updateHUD(); refreshJournal();
+  }
   if (done) done();
 }
 $('epClear').addEventListener('click', () => { epState.pool = epState.pool.concat(epState.answer); epState.answer = []; renderEpistle(); });
@@ -1498,7 +1510,12 @@ function label(c, txt, x, y, col) {
 function endMaze() {
   mazeActive = false;
   mazeEl.classList.remove('show');
-  if (conversionActive) convNext();    // resume the conversion (healing)
+  if (conversionActive) { convNext(); return; }   // resume the conversion (healing)
+  if (challengeMode) {                            // played from the challenges menu
+    challengeMode = false;
+    setChallengeStatus(`🌀 Ananias reached Saul in ${Math.round((performance.now() - maze.t0) / 1000)}s`);
+    showChallenges();
+  }
 }
 
 // ---- minimap (always on, top right) + the full sea chart (M) ----
@@ -1725,6 +1742,82 @@ function enterGameAfterLoad() {
 }
 
 $('titleLoadBtn').addEventListener('click', () => $('loadFile').click());
+
+// ----------------------------------------------------------------------------
+//  Challenges — play the mini-games straight from the title screen
+// ----------------------------------------------------------------------------
+let challengeMode = false;               // a mini-game launched from the menu is running
+const challengesEl = $('challenges');
+function showChallenges() {
+  if (!started) $('start').style.display = 'flex';   // bring the title back behind the menu
+  challengesEl.classList.add('show');
+}
+function hideChallenges() { challengesEl.classList.remove('show'); }
+function launchChallenge(startGame) {
+  challengesEl.classList.remove('show');
+  $('start').style.display = 'none';   // the mini-game overlays sit below the title screen
+  challengeMode = true;
+  startAudio();                        // the click is the user gesture WebAudio needs
+  startGame();
+}
+function setChallengeStatus(msg) {
+  const s = $('chStatus');
+  s.textContent = msg;
+  s.style.display = msg ? 'block' : 'none';
+}
+
+$('challengesBtn').addEventListener('click', () => { setChallengeStatus(''); showChallenges(); });
+$('challengesBack').addEventListener('click', hideChallenges);
+
+$('chMaze').addEventListener('click', () => launchChallenge(startMaze));
+
+// the five arcade adventures (see src/challenges.js)
+for (const g of ARCADE_GAMES) {
+  const b = document.createElement('button');
+  b.className = 'ghost';
+  b.textContent = `${g.icon} ${g.title}`;
+  b.addEventListener('click', () => launchChallenge(() => {
+    $('arcadeTitle').textContent = `${g.icon} ${g.title}`;
+    $('arcadeSub').innerHTML = `${g.tagline} · <b>Esc</b> to quit`;
+    $('arcade').classList.add('show');
+    startArcade(g.id, {
+      canvas: $('arcadeCanvas'), keys,
+      sfx: { chime: sfxChime, rumble: sfxRumble, stab: sfxStab, impact: sfxImpact, crowd: sfxCrowd },
+      onExit(status) {
+        $('arcade').classList.remove('show');
+        challengeMode = false;
+        setChallengeStatus(status || '');
+        showChallenges();
+      },
+    });
+  }));
+  $('chArcade').appendChild(b);
+}
+
+// one button per epistle verse
+for (const [id, e] of Object.entries(EPISTLES)) {
+  const t = byId(id);
+  if (!t) continue;
+  const b = document.createElement('button');
+  b.className = 'ghost';
+  b.textContent = `${t.name} — ${e.ref}`;
+  b.addEventListener('click', () => launchChallenge(() => {
+    startEpistle(t, () => {
+      challengeMode = false;
+      setChallengeStatus(`✍ You wrote the verse — ${e.ref}`);
+      showChallenges();
+    }, true);
+  }));
+  $('chEpistles').appendChild(b);
+}
+
+function quitChallenge() {               // Esc mid-game → straight back to the menu
+  challengeMode = false;
+  if (mazeActive) { mazeActive = false; mazeEl.classList.remove('show'); }
+  if (epistleOpen) { epistleOpen = false; epEl.classList.remove('show'); }
+  if (arcadeRunning()) { stopArcade(); $('arcade').classList.remove('show'); }
+  showChallenges();
+}
 function updateMusicBtn() { $('musicBtn').textContent = music.on ? '🎵 Music: On' : '🔇 Music: Off'; }
 $('musicBtn').addEventListener('click', () => { toggleMusic(); });
 $('resumeBtn').addEventListener('click', () => togglePause());
